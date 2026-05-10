@@ -6,9 +6,50 @@ from typing import Callable
 DURATION = 120
 COMPLEX = False
 
+# deepseek v4-pro:
 #
-# RNG
+# The obvious way to build a math problem generator is rejection sampling:
+# roll random numbers, form a problem, check whether the answer came out
+# "nice" — small integers, clean radicals, nothing that would confuse a
+# student. If the answer is ugly, roll again. For arithmetic this works
+# perfectly. Pick any two numbers, add them, the sum is never ugly. The
+# problem space is wide and regular and the forward map (addition)
+# preserves niceness for free.
 #
+# Step outside arithmetic and rejection sampling breaks. The eigenvalue
+# code that originally shipped here sampled random integer matrices P,
+# computed A = P D P^{-1}, and checked whether A's entries stayed within
+# bounds. Hit rate: ~4%. When the loop exhausted it fell back to the
+# same hardcoded matrix every time — mode collapse. The issue is not
+# that the bounds are too tight; it is that "nice eigenvalues" and "nice
+# matrix entries" each define a sparse subset of the sampling space, and
+# their intersection is sparse and irregular. If the region you are
+# trying to hit cannot be parameterized directly, random sampling will
+# not cover it.
+#
+# The alternative is to sample the answer space instead of the problem
+# space. Pick clean answers first, project them forward to problems. For
+# polynomial roots: pick integer (or rational, or simple radical) roots,
+# multiply out the factors, present the expanded polynomial. The forward
+# map — symmetric polynomial expansion — is an integer-coefficient
+# polynomial map. Integer in, integer out, always. Every answer-tuple
+# within bounds produces a valid problem. No rejection loop, no fallback,
+# full coverage of the space.
+#
+# All the algebra here works this way because the forward maps are
+# polynomial over the integers: LUP factorization for determinants, row
+# operations for inverses, trace/determinant constraints for eigenvalues,
+# symmetric sums for roots. Every generator is constructive. COMPLEX
+# lifts everything to Gaussian integers with no change to the maps.
+#
+# Calculus does not admit this. The forward map for antiderivatives is
+# differentiation, and differentiation does not preserve niceness — a
+# tidy F becomes a sprawling f. Going the other direction (sample f,
+# check whether \int f is elementary) is worse: almost no random function
+# has an elementary antiderivative. The intersection of "nice integrand"
+# and "nice integral" is sparse with no known constructive
+# parameterization. Algebra is tractable because its maps are polynomial;
+# calculus is not because its maps are transcendental. That is the line.
 
 def _rng(low: int, high: int, imag: bool = True) -> complex:
 	real = random.randint(low, high)
@@ -76,7 +117,6 @@ def format_complex_cartesian(real_value: float, imag_value: float) -> str:
 #
 # TODO: format_complex_int(), format_complex_float()
 #
-
 def format_complex_result(value: complex) -> str:
 	if abs(value.imag) < 1e-9:
 		real = value.real
@@ -104,8 +144,8 @@ def _fentry(value: complex) -> str:
 	return format_complex_result(value)
 
 def format_matrix(rows: list[list]) -> str:
-	# ( x0 y0 | x1 y1 )
-	return '( ' + ' | '.join(' '.join(_fentry(v) for v in row) for row in rows) + ' )'
+	# {x0 y0 | x1 y1}
+	return '{' + ' | '.join(' '.join(_fmt(v) for v in row) for row in rows) + '}'
 
 #
 # arithmetic
@@ -141,52 +181,49 @@ def power() -> tuple[str, complex]:
 # transcendental
 #
 
-def Exp() -> tuple[str, complex]:
+def Exp():
 	z = _rng_float(-2, 2)
 	return f'Exp[{_fmt(z)}]', cmath.exp(z)
 
-def Log() -> tuple[str, complex]:
+def Log():
 	x = _rng(2, 1000, imag=False)
 	return f'Log[{_fmt(x)}]', cmath.log(x)
 
-def LogBase() -> tuple[str, complex]:
+def LogBase():
 	b = _rng(2, 16, imag=False)
 	x = _rng(2, 1000, imag=False)
-	return f'Log[{_fmt(b)}, {_fmt(x)}]', cmath.log(x) / cmath.log(b)
+	return f'Log[{_fmt(b)}, {_fmt(x)}]', cmath.log(x)/cmath.log(b)
 
-def Sin() -> tuple[str, complex]:
-	z = _rng_float(0, math.pi / 2)
+def Sin():
+	z = _rng_float(0, math.pi/2)
 	return f'Sin[{_fmt(z)}]', cmath.sin(z)
 
-def Cos() -> tuple[str, complex]:
-	z = _rng_float(0, math.pi / 2)
+def Cos():
+	z = _rng_float(0, math.pi/2)
 	return f'Cos[{_fmt(z)}]', cmath.cos(z)
 
-def Tan() -> tuple[str, complex]:
+def Tan():
 	z = _rng_float(0, math.pi / 3)
 	return f'Tan[{_fmt(z)}]', cmath.tan(z)
 
-def ArcSin() -> tuple[str, complex]:
+def ArcSin():
 	x = round(random.uniform(0, 1), 2)
-	return f'ArcSin[{x}]', complex(math.degrees(math.asin(x)), 0)
+	return f'ArcSin[{x}]', math.asin(x)
 
-def ArcCos() -> tuple[str, complex]:
+def ArcCos():
 	x = round(random.uniform(0, 1), 2)
-	return f'ArcCos[{x}]', complex(math.degrees(math.acos(x)), 0)
+	return f'ArcCos[{x}]', math.acos(x)
 
-def ArcTan() -> tuple[str, complex]:
+def ArcTan():
 	x = round(random.uniform(0, 5), 2)
-	return f'ArcTan[{x}]', complex(math.degrees(math.atan(x)), 0)
+	return f'ArcTan[{x}]', math.atan(x)
 
-def Arg() -> tuple[str, complex]:
-	z1 = _rng_float(-5, 5)
-	if abs(z1) < 1e-9:
-		z1 = complex(1, 0)
-	rad = round(random.uniform(10, 350), 1) * math.pi / 180
-	z2 = z1 * complex(math.cos(rad), math.sin(rad))
-	return f'Arg[{_fres(z2)} / {_fmt(z1)}]', complex(rad, 0)
+def Arg():
+	z = _rng_float(-5, 5)
+	if abs(z) < 1e-9: z = complex(1, 0)
+	return f'Arg[{z}]', math.atan(z.imag / z.real)
 
-def complex_rotation() -> tuple[str, complex]:
+def complex_rotation():
 	z = _rng_float(-5, 5)
 	if abs(z) < 1e-9:
 		z = complex(1, 0)
@@ -199,27 +236,49 @@ def complex_rotation() -> tuple[str, complex]:
 # matrix
 #
 
-def determinant_2x2() -> tuple[str, complex]:
-	a, b = _rng(-8, 8, imag=False), _rng(-8, 8, imag=False)
-	c, d = _rng(-8, 8, imag=False), _rng(-8, 8, imag=False)
+def determinant_2x2():
+	a, b = _rng(-8, 8), _rng(-8, 8)
+	c, d = _rng(-8, 8), _rng(-8, 8)
 	return f'Det{format_matrix([[a, b], [c, d]])}', a * d - b * c
 
-def determinant_3x3() -> tuple[str, complex]:
-	for _ in range(100):
-		rows = [[_rng(-2, 2, imag=False) for _ in range(3)] for _ in range(3)]
-		a, b, c = rows[0]
-		d, e, f = rows[1]
-		g, h, i = rows[2]
-		det = a*(e*i - f*h) - b*(d*i - f*g) + c*(d*h - e*g)
-		if det != 0 and abs(det) <= 20:
-			break
-	return f'Det{format_matrix(rows)}', complex(det, 0)
+def determinant_3x3():
+	target_det = _rng(-10, 10)
+	if target_det == 0:
+		target_det = complex(random.choice([-1, 1]), random.randint(0, 5) if COMPLEX else 0)
+		if target_det == 0:
+			target_det = complex(1, 0)
 
-def matmul_2x2() -> tuple[str, tuple[complex, complex, complex, complex]]:
-	a11, a12 = _rng(-4, 4, imag=False), _rng(-4, 4, imag=False)
-	a21, a22 = _rng(-4, 4, imag=False), _rng(-4, 4, imag=False)
-	b11, b12 = _rng(-4, 4, imag=False), _rng(-4, 4, imag=False)
-	b21, b22 = _rng(-4, 4, imag=False), _rng(-4, 4, imag=False)
+	d1 = complex(1, 0)
+	d2 = complex(1, 0)
+	d3 = target_det
+
+	# A = L·U with L unit lower-triangular, U upper-triangular.
+	# det(A) = det(L)·det(U) = 1 · d1·d2·d3 = target_det
+	u12 = _rng(-2, 2)
+	u13 = _rng(-2, 2)
+	u23 = _rng(-2, 2)
+	l21 = _rng(-2, 2)
+	l31 = _rng(-2, 2)
+	l32 = _rng(-2, 2)
+
+	rows = [
+		[d1, u12, u13],
+		[l21 * d1, l21 * u12 + d2, l21 * u13 + u23],
+		[l31 * d1, l31 * u12 + l32 * d2, l31 * u13 + l32 * u23 + d3]
+	]
+
+	if random.random() < 0.3:
+		r1, r2 = random.sample([0, 1, 2], 2)
+		rows[r1], rows[r2] = rows[r2], rows[r1]
+		target_det = -target_det
+
+	return f'Det{format_matrix(rows)}', target_det
+
+def matmul_2x2():
+	a11, a12 = _rng(-4, 4), _rng(-4, 4)
+	a21, a22 = _rng(-4, 4), _rng(-4, 4)
+	b11, b12 = _rng(-4, 4), _rng(-4, 4)
+	b21, b22 = _rng(-4, 4), _rng(-4, 4)
 	r11 = a11 * b11 + a12 * b21
 	r12 = a11 * b12 + a12 * b22
 	r21 = a21 * b11 + a22 * b21
@@ -228,36 +287,65 @@ def matmul_2x2() -> tuple[str, tuple[complex, complex, complex, complex]]:
 	B = format_matrix([[b11, b12], [b21, b22]])
 	return f'{A} * {B}', (r11, r12, r21, r22)
 
-def matmul_3x3() -> tuple[str, tuple[complex, ...]]:
-	A = [[_rng(-2, 2, imag=False) for _ in range(3)] for _ in range(3)]
-	B = [[_rng(-2, 2, imag=False) for _ in range(3)] for _ in range(3)]
+def matmul_3x3():
+	A = [[_rng(-2, 2) for _ in range(3)] for _ in range(3)]
+	B = [[_rng(-2, 2) for _ in range(3)] for _ in range(3)]
 	C = [[sum(A[i][k] * B[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
-	flat = tuple(complex(v, 0) for row in C for v in row)
+	flat = tuple(v for row in C for v in row)
 	return f'{format_matrix(A)} * {format_matrix(B)}', flat
 
-def inverse_2x2() -> tuple[str, tuple[complex, complex, complex, complex]]:
-	for _ in range(200):
-		a, b = _rng(-4, 4, imag=False), _rng(-4, 4, imag=False)
-		c, d = _rng(-4, 4, imag=False), _rng(-4, 4, imag=False)
-		det = a * d - b * c
-		if abs(det) == 1:
-			if det == 1:
-				inv = (d, -b, -c, a)
-			else:
-				inv = (-d, b, c, -a)
-			return f'Inverse{format_matrix([[a, b], [c, d]])}', inv
+def inverse_2x2():
+	# Restrict |det| = 1 so A⁻¹ = adj(A)/det has Gaussian integer entries.
+	det = random.choice([-1, 1, 1j, -1j]) if COMPLEX else random.choice([-1, 1])
+	bound = 4
+
+	for _ in range(50):
+		a = _rng(-bound, bound)
+		b = _rng(-bound, bound)
+		if a == 0 or b == 0:
+			continue
+
+		for d_real in range(-bound, bound + 1):
+			for d_imag in range(-bound, bound + 1):
+				d = complex(d_real, d_imag)
+				# Solve ad - bc = det for c over Gaussian integers:
+				# c = (a·d - det)/b must have integer real and imaginary parts
+				num = a * d - det
+				c = num / b
+				if abs(c.real - round(c.real)) < 1e-9 and abs(c.imag - round(c.imag)) < 1e-9:
+					cr = round(c.real)
+					ci = round(c.imag)
+					if -bound <= cr <= bound and -bound <= ci <= bound:
+						c = complex(cr, ci)
+						if b != 0 and c != 0:
+							if det == 1:
+								inv = (d, -b, -c, a)
+							elif det == -1:
+								inv = (-d, b, c, -a)
+							elif det == 1j:
+								inv = (-1j * d, 1j * b, 1j * c, -1j * a)
+							else:
+								inv = (1j * d, -1j * b, -1j * c, 1j * a)
+							return f'Inverse{format_matrix([[a, b], [c, d]])}', inv
+
 	I = format_matrix([[1, 0], [0, 1]])
 	return f'Inverse{I}', (1, 0, 0, 1)
 
 def inverse_3x3() -> tuple[str, tuple[complex, ...]]:
-	A = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+	A = [[complex(1, 0), complex(0, 0), complex(0, 0)],
+	     [complex(0, 0), complex(1, 0), complex(0, 0)],
+	     [complex(0, 0), complex(0, 0), complex(1, 0)]]
 	ops = []
-	for _ in range(random.randint(2, 4)):
+	n_ops = random.randint(4, 7) if COMPLEX else random.randint(2, 4)
+	for _ in range(n_ops):
 		t = random.choice(['add', 'swap', 'neg'])
 		if t == 'add':
 			i, j = random.sample([0, 1, 2], 2)
-			k = random.randint(-2, 2)
-			if k == 0: k = 1
+			k = _rng(-2, 2)
+			if k == 0:
+				k = complex(random.randint(-2, 2), random.randint(-2, 2))
+				if k == 0:
+					k = complex(1, 0)
 			A[i] = [A[i][c] + k * A[j][c] for c in range(3)]
 			ops.append(('add', i, j, k))
 		elif t == 'swap':
@@ -268,7 +356,12 @@ def inverse_3x3() -> tuple[str, tuple[complex, ...]]:
 			i = random.randint(0, 2)
 			A[i] = [-x for x in A[i]]
 			ops.append(('neg', i))
-	inv = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+	inv = [[complex(1, 0), complex(0, 0), complex(0, 0)],
+	       [complex(0, 0), complex(1, 0), complex(0, 0)],
+	       [complex(0, 0), complex(0, 0), complex(1, 0)]]
+	# If A = E_k · ... · E_1 · I, then A⁻¹ = E_1⁻¹ · ... · E_k⁻¹ · I.
+	# Reversing the ops and inverting each (add→subtract, swap↔swap, neg↔neg)
+	# applied to the identity yields the inverse.
 	for op in reversed(ops):
 		if op[0] == 'add':
 			_, i, j, k = op
@@ -279,60 +372,77 @@ def inverse_3x3() -> tuple[str, tuple[complex, ...]]:
 		else:
 			_, i = op
 			inv[i] = [-x for x in inv[i]]
-	flat = tuple(complex(v, 0) for row in inv for v in row)
+	flat = tuple(v for row in inv for v in row)
 	return f'Inverse{format_matrix(A)}', flat
 
-def _real_eig_2x2(lam_range, P_range, entry_bound):
-	for _ in range(200):
-		lam1 = random.randint(-lam_range, lam_range)
-		lam2 = random.randint(-lam_range, lam_range)
-		if lam1 == lam2:
-			continue
-		p11 = random.randint(-P_range, P_range)
-		p12 = random.randint(-P_range, P_range)
-		p21 = random.randint(-P_range, P_range)
-		p22 = random.randint(-P_range, P_range)
-		det_p = p11 * p22 - p12 * p21
-		if abs(det_p) != 1:
-			continue
-		a = det_p * (p11 * p22 * lam1 - p12 * p21 * lam2)
-		b = det_p * p11 * p12 * (lam2 - lam1)
-		c = det_p * p21 * p22 * (lam1 - lam2)
-		d = det_p * (-p21 * p12 * lam1 + p22 * p11 * lam2)
-		if all(-entry_bound <= v <= entry_bound for v in (a, b, c, d)):
-			return a, b, c, d, lam1, lam2
-	return None
-
-def eigenvalues_2x2() -> tuple[str, tuple[complex, complex]]:
+def eigenvalues_2x2():
 	strategy = random.choice(['real_diagonalizable', 'complex_conjugate_pair'])
+	bound = 8
+
 	if strategy == 'real_diagonalizable':
-		result = _real_eig_2x2(5, 3, 8)
-		if result:
-			a, b, c, d, lam1, lam2 = result
-			return f'Eigenvalues{format_matrix([[a, b], [c, d]])}', (complex(lam1, 0), complex(lam2, 0))
-		return f'Eigenvalues{format_matrix([[3, 1], [0, 2]])}', (complex(3, 0), complex(2, 0))
+		lam1 = random.randint(-5, 5)
+		lam2 = random.randint(-5, 5)
+		if lam1 == lam2:
+			lam2 += random.choice([-1, 1])
+
+		trace = lam1 + lam2
+		det_val = lam1 * lam2
+
+		# Characteristic polynomial: λ² - tr(A)·λ + det(A).
+		# For eigenvalues λ₁,λ₂ we need tr(A)=λ₁+λ₂ and det(A)=λ₁λ₂.
+		# Pick a, set d = tr - a, then find b,c such that ad - bc = det.
+		candidates = []
+		for a in range(-bound, bound + 1):
+			d = trace - a
+			if abs(d) > bound:
+				continue
+			bc = a * d - det_val
+			if bc == 0:
+				continue
+			for b in range(-bound, bound + 1):
+				if b == 0:
+					continue
+				if bc % b == 0:
+					c = bc // b
+					if abs(c) <= bound and c != 0:
+						candidates.append((a, b, c, d))
+
+		if candidates:
+			a, b, c, d = random.choice(candidates)
+		else:
+			a, b, c, d = lam1 + lam2, 1, 1, lam1 + lam2 - 1  # fallback
+
+		return f'Eigenvalues{format_matrix([[a, b], [c, d]])}', (complex(lam1, 0), complex(lam2, 0))
+
+	# Complex: eigenvalues re +/- i*im
 	re = random.randint(-3, 3)
 	im = random.randint(1, 3)
-	M = format_matrix([[re, -im], [im, re]])
-	return f'Eigenvalues{M}', (complex(re, im), complex(re, -im))
 
-def eigenvalues_3x3() -> tuple[str, tuple[complex, complex, complex]]:
-	obvious = random.randint(-3, 3)
-	if obvious == 0:
-		obvious = 1
-	strategy = random.choice(['real_diagonalizable', 'complex_conjugate_pair'])
-	if strategy == 'real_diagonalizable':
-		result = _real_eig_2x2(3, 2, 5)
-		if result:
-			a, b, c, d, lam1, lam2 = result
-			rows = [[a, b, 0], [c, d, 0], [0, 0, obvious]]
-			return f'Eigenvalues{format_matrix(rows)}', (complex(lam1, 0), complex(lam2, 0), complex(obvious, 0))
-		rows = [[3, 1, 0], [0, 2, 0], [0, 0, obvious]]
-		return f'Eigenvalues{format_matrix(rows)}', (complex(3, 0), complex(2, 0), complex(obvious, 0))
-	re = random.randint(-2, 2)
-	im = random.randint(1, 3)
-	rows = [[re, -im, 0], [im, re, 0], [0, 0, obvious]]
-	return f'Eigenvalues{format_matrix(rows)}', (complex(re, im), complex(re, -im), complex(obvious, 0))
+	trace = 2 * re
+	det_val = re * re + im * im
+
+	candidates = []
+	for a in range(-bound, bound + 1):
+		d = trace - a
+		if abs(d) > bound:
+			continue
+		bc = a * d - det_val
+		if bc == 0:
+			continue
+		for b in range(-bound, bound + 1):
+			if b == 0:
+				continue
+			if bc % b == 0:
+				c = bc // b
+				if abs(c) <= bound and c != 0:
+					candidates.append((a, b, c, d))
+
+	if candidates:
+		a, b, c, d = random.choice(candidates)
+	else:
+		a, b, c, d = re, -im, im, re  # fallback: canonical form
+
+	return f'Eigenvalues{format_matrix([[a, b], [c, d]])}', (complex(re, im), complex(re, -im))
 
 #
 # polynomial
@@ -359,32 +469,127 @@ def _format_polynomial(coeffs: list[int]) -> str:
 		terms.append(term)
 	return ' '.join(terms).strip()
 
-def Roots() -> tuple[str, list[complex]]:
-	degree = random.choices([2,3,4], weights=[90,9,1], k=1)[0]
-	roots = []
-	remaining = degree
-	while remaining > 0:
-		if COMPLEX and remaining >= 2 and random.choice([True, False]):
+def _roots_integer(degree: int) -> tuple[list[int], list[complex]]:
+	roots_int = [random.randint(-10, 10) for _ in range(degree)]
+	coeffs = [1]
+	for r in roots_int:
+		coeffs = _multiply_polynomials(coeffs, [-r, 1])
+	return coeffs, [complex(r, 0) for r in roots_int]
+
+def _roots_rational(degree: int) -> tuple[list[int], list[complex]]:
+	from fractions import Fraction
+	roots_frac = [Fraction(random.randint(-6, 6), random.randint(2, 4)) for _ in range(degree)]
+	coeffs = [1]
+	for r in roots_frac:
+		coeffs = _multiply_polynomials(coeffs, [-r.numerator, r.denominator])
+	g = coeffs[0]
+	for c in coeffs[1:]:
+		g = math.gcd(g, c)
+	if g > 1:
+		coeffs = [c // g for c in coeffs]
+	return coeffs, [complex(float(r), 0) for r in roots_frac]
+
+def _roots_gaussian(degree: int) -> tuple[list[int], list[complex]]:
+	roots: list[complex] = []
+	coeffs = [1]
+	rem = degree
+	while rem > 0:
+		if COMPLEX and rem >= 2 and random.choice([True, False]):
 			a = random.randint(-10, 10)
 			b = random.randint(1, 10)
 			roots.extend([complex(a, b), complex(a, -b)])
-			remaining -= 2
-		else:
-			roots.append(complex(random.randint(-10, 10), 0))
-			remaining -= 1
-
-	coeffs = [1]
-	i = 0
-	while i < len(roots):
-		r = roots[i]
-		if abs(r.imag) < 1e-9:
-			coeffs = _multiply_polynomials(coeffs, [-int(r.real), 1])
-			i += 1
-		else:
-			a = int(r.real)
-			b = int(abs(r.imag))
 			coeffs = _multiply_polynomials(coeffs, [a * a + b * b, -2 * a, 1])
-			i += 2
+			rem -= 2
+		else:
+			r = random.randint(-10, 10)
+			roots.append(complex(r, 0))
+			coeffs = _multiply_polynomials(coeffs, [-r, 1])
+			rem -= 1
+	return coeffs, roots
+
+SQUAREFREE = [2, 3, 5, 6, 7, 10, 11, 13, 14, 15, 17, 19, 21, 22, 23]
+
+def _roots_surd_real(degree: int) -> tuple[list[int], list[complex]]:
+	max_coeff = 300 if degree <= 3 else 500
+	for _ in range(5):
+		roots: list[complex] = []
+		coeffs = [1]
+		rem = degree
+		while rem > 0:
+			if rem >= 2 and random.choice([True, rem >= 4]):
+				p = random.randint(-4, 4)
+				q = 1
+				r = random.randint(1, 3)
+				d = random.choice(SQUAREFREE[:8] if degree >= 3 else SQUAREFREE)
+				# Roots (p ± q√d)/r: quadratic factor is r²x² - 2prx + (p² - q²d)
+				factor = [p * p - q * q * d, -2 * p * r, r * r]
+				coeffs = _multiply_polynomials(coeffs, factor)
+				sqrt_d = math.sqrt(d)
+				roots.append(complex((p + q * sqrt_d) / r, 0))
+				roots.append(complex((p - q * sqrt_d) / r, 0))
+				rem -= 2
+			else:
+				n = random.randint(-10, 10)
+				roots.append(complex(n, 0))
+				coeffs = _multiply_polynomials(coeffs, [-n, 1])
+				rem -= 1
+		if max(abs(c) for c in coeffs) <= max_coeff:
+			return coeffs, roots
+	# Last attempt stands (coefficients may be large but math is correct)
+	return coeffs, roots
+
+def _roots_surd_complex(degree: int) -> tuple[list[int], list[complex]]:
+	max_coeff = 300 if degree <= 3 else 500
+	for _ in range(5):
+		roots: list[complex] = []
+		coeffs = [1]
+		rem = degree
+		while rem > 0:
+			if rem >= 2 and random.choice([True, rem >= 4]):
+				p = random.randint(-4, 4)
+				q = 1
+				r = random.randint(1, 3)
+				d = random.choice(SQUAREFREE[:8] if degree >= 3 else SQUAREFREE)
+				# Roots (p ± qi√d)/r: quadratic factor is r²x² - 2prx + (p² + q²d)
+				factor = [p * p + q * q * d, -2 * p * r, r * r]
+				coeffs = _multiply_polynomials(coeffs, factor)
+				sqrt_d = math.sqrt(d)
+				roots.append(complex(p / r, q * sqrt_d / r))
+				roots.append(complex(p / r, -q * sqrt_d / r))
+				rem -= 2
+			else:
+				n = random.randint(-10, 10)
+				roots.append(complex(n, 0))
+				coeffs = _multiply_polynomials(coeffs, [-n, 1])
+				rem -= 1
+		if max(abs(c) for c in coeffs) <= max_coeff:
+			return coeffs, roots
+	return coeffs, roots
+
+def _roots_repeated(degree: int) -> tuple[list[int], list[complex]]:
+	unique_n = random.randint(1, max(1, degree - 1))
+	unique = [random.randint(-10, 10) for _ in range(unique_n)]
+	roots_int = unique[:]
+	while len(roots_int) < degree:
+		roots_int.append(random.choice(unique))
+	random.shuffle(roots_int)
+	coeffs = [1]
+	for r in roots_int:
+		coeffs = _multiply_polynomials(coeffs, [-r, 1])
+	return coeffs, [complex(r, 0) for r in roots_int]
+
+def Roots() -> tuple[str, list[complex]]:
+	degree = random.choices([2, 3, 4], weights=[80, 15, 5], k=1)[0]
+	strategies = ['integer', 'rational', 'surd_real', 'repeated']
+	if COMPLEX: strategies.extend(['gaussian', 'surd_complex'])
+	strategy = random.choice(strategies)
+	if strategy == 'integer': coeffs, roots = _roots_integer(degree)
+	elif strategy == 'rational': coeffs, roots = _roots_rational(degree)
+	elif strategy == 'gaussian': coeffs, roots = _roots_gaussian(degree)
+	elif strategy == 'surd_real': coeffs, roots = _roots_surd_real(degree)
+	elif strategy == 'surd_complex': coeffs, roots = _roots_surd_complex(degree)
+	elif strategy == 'repeated': coeffs, roots = _roots_repeated(degree)
+	else: coeffs, roots = _roots_integer(degree)
 	return f'Roots[{_format_polynomial(coeffs)} == 0, x]', roots
 
 #
@@ -411,13 +616,12 @@ ENABLED_MODES: list[Callable[[], tuple[str, object]]] = [
 	#complex_rotation,
 
 	#determinant_2x2,
-	#determinant_3x3,
 	#matmul_2x2,
-	#matmul_3x3,
 	#inverse_2x2,
-	#inverse_3x3,
 	#eigenvalues_2x2,
-	#eigenvalues_3x3,
+	#determinant_3x3,
+	#matmul_3x3,
+	#inverse_3x3,
 
 	Roots,
 ]
