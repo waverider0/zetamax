@@ -156,124 +156,40 @@ def division() -> tuple[str, complex]:
 	z2 = _rng(2, 100)
 	return f'{_fmt(z1)} / {_fmt(z2)}', z1 / z2
 
+#
+# Transcendentals (non-algebraically-closed) -- intentionally minimal.
+#
+
 def power() -> tuple[str, complex]:
 	z = _rng(2, 10)
 	x = random.randint(2, 8)
 	return f'{_fmt(z)}^{x}', z ** x
 
-#
-# Number theory
-#
-
-class _UnitTolerantComplex:
-	"""Stores the canonical form of a Gaussian integer answer.
-	The grading loop normalizes the user's answer before comparison,
-	so any associate (+-1, +-i multiples) is accepted."""
-	def __init__(self, canonical: complex):
-		self.canonical = canonical
-
-class _CongruenceCheck:
-	"""Stores (a, m) so the grading loop can verify m | (a - answer)
-	rather than comparing against a specific remainder."""
-	def __init__(self, a: complex, m: complex, remainder: complex):
-		self.a = a
-		self.m = m
-		self.remainder = remainder
-
-def _gaussian_divmod(a: complex, b: complex) -> tuple[complex, complex]:
-	q = complex(round((a / b).real), round((a / b).imag))
-	return q, a - q * b
-
-def _gaussian_gcd(a: complex, b: complex) -> complex:
-	while b != 0:
-		_, r = _gaussian_divmod(a, b)
-		a, b = b, r
-	return a
-
-def _is_gaussian_unit(z: complex) -> bool:
-	return abs(abs(z) - 1) < 1e-9
-
-def _canonical_gaussian(z: complex) -> complex:
-	# gcd in Z[i] is only defined up to units (+-1, +-i).
-	# Normalizing to the first quadrant (re > 0, im >= 0)
-	# picks a unique representative for grading.
-	if z == 0: return z
-	for u in [1, -1, 1j, -1j]:
-		w = z * u
-		if w.real > 0 and w.imag >= 0: return w
-	for u in [1, -1, 1j, -1j]:
-		w = z * u
-		if w.real >= 0 and w.imag > 0: return w
-	if z.real != 0: return complex(abs(z.real), z.imag)
-	return complex(z.real, abs(z.imag))
-
-def GCD() -> tuple[str, object]:
-	if not COMPLEX:
-		g = random.randint(2, 20)
-		a = random.randint(2, 15)
-		# consecutive integers are always coprime -- zero rejection.
-		b = a + 1
-		x = g * a
-		y = g * b
-		return f'GCD[{x}, {y}]', complex(g, 0)
+def integer_log():
+	n = random.randint(2, 6)
 	while True:
-		g_raw = complex(random.randint(-5, 5), random.randint(-5, 5))
-		if abs(g_raw) > 1 and g_raw != 0: break
-	g = _canonical_gaussian(g_raw)
-	# random Gaussian integer pairs are coprime ~67% of the time.
-	# Expected iterations: ~1.5 -- not a sparse search.
-	for _ in range(20):
-		a = complex(random.randint(1, 6), random.randint(-3, 3))
-		b = complex(random.randint(1, 6), random.randint(-3, 3))
-		if a != 0 and b != 0 and a != b and _is_gaussian_unit(_gaussian_gcd(a, b)): break
-	x = g * a
-	y = g * b
-	return f'GCD[{_fmt(x)}, {_fmt(y)}]', _UnitTolerantComplex(g)
+		z1 = _rng(-8, 8)
+		# Gaussian units (+-1, +-i) cycle under exponentiation
+		# (i^1 = i^5 = i) making Log ambiguous with multiple
+		# integer answers. All other Gaussian integers are
+		# injective: z^k = z^n implies k = n. Rejection rate
+		# ~1.7% across 50k samples -- not a sparse search.
+		if abs(z1) != 1: break
+	z2 = z1 ** n
+	return f'Log[{_fmt(z1)}, {_fmt(z2)}]', complex(n, 0)
 
-def Mod() -> tuple[str, object]:
-	if not COMPLEX:
-		m = random.randint(5, 30)
-		r = random.randint(0, m - 1)
-		q = random.randint(2, 30)
-		a = q * m + r
-		return f'Mod[{a}, {m}]', complex(r, 0)
-	while True:
-		m = complex(random.randint(2, 5), random.randint(0, 3))
-		if m != 0: break
-	r_raw = complex(random.randint(-4, 4), random.randint(-4, 4))
-	if r_raw == 0: r_raw = 1
-	_, r = _gaussian_divmod(r_raw, m)
-	q = complex(random.randint(1, 5), random.randint(0, 3))
-	a = q * m + r
-	return f'Mod[{_fmt(a)}, {_fmt(m)}]', _CongruenceCheck(a, m, r)
+def complex_rotation():
+	z = _rng_float(-5, 5)
+	if abs(z) < 1e-9: z = complex(1, 0)
+	deg = round(random.uniform(10, 350), 1)
+	rad = math.radians(deg)
+	result = z * complex(math.cos(rad), math.sin(rad))
+	return f'{_fmt(z)} * Exp[I {deg:.1f} Degree]', result
 
-def ModularInverse() -> tuple[str, complex]:
-	p = random.choice([5, 7, 11, 13, 17, 19, 23, 29, 31])
-	a = random.randint(2, p - 1)
-	inv = pow(a, -1, p)
-	return f'ModularInverse[{a}, {p}]', complex(inv, 0)
-
-def FactorInteger() -> tuple[str, list[complex]]:
-	small_primes = [2, 3, 5, 7, 11, 13]
-	n_factors = random.randint(2, 5)
-	factors = [random.choice(small_primes) for _ in range(n_factors)]
-	n = 1
-	for f in factors: n *= f
-	return f'FactorInteger[{n}]', [complex(f, 0) for f in factors]
-
-#
-# Combinatorics
-#
-
-def Binomial() -> tuple[str, complex]:
-	n = random.randint(2, 12)
-	k = random.randint(1, min(n - 1, 6))
-	return f'Binomial[{n}, {k}]', complex(math.comb(n, k), 0)
-
-def FactorialPower() -> tuple[str, complex]:
-	n = random.randint(2, 12)
-	k = random.randint(1, min(n, 6))
-	return f'FactorialPower[{n}, {k}]', complex(math.perm(n, k), 0)
+def complex_angle():
+	z = _rng_float(-5, 5)
+	if abs(z) < 1e-9: z = complex(1, 0)
+	return f'Arg[{z}]', math.atan(z.imag / z.real)
 
 #
 # Polynomial and linear algebra
@@ -508,34 +424,118 @@ def eigenvalues_2x2():
 	return f'Eigenvalues{format_matrix([[a, b], [c, d]])}', (complex(re, im), complex(re, -im))
 
 #
-# Transcendentals (non-algebraically-closed) -- intentionally minimal
+# Combinatorics
 #
 
-def integer_log():
-	n = random.randint(2, 6)
+def Binomial() -> tuple[str, complex]:
+	n = random.randint(2, 12)
+	k = random.randint(1, min(n - 1, 6))
+	return f'Binomial[{n}, {k}]', complex(math.comb(n, k), 0)
+
+def FactorialPower() -> tuple[str, complex]:
+	n = random.randint(2, 12)
+	k = random.randint(1, min(n, 6))
+	return f'FactorialPower[{n}, {k}]', complex(math.perm(n, k), 0)
+
+#
+# Number theory
+#
+
+class _UnitTolerantComplex:
+	"""Stores the canonical form of a Gaussian integer answer.
+	The grading loop normalizes the user's answer before comparison,
+	so any associate (+-1, +-i multiples) is accepted."""
+	def __init__(self, canonical: complex):
+		self.canonical = canonical
+
+class _CongruenceCheck:
+	"""Stores (a, m) so the grading loop can verify m | (a - answer)
+	rather than comparing against a specific remainder."""
+	def __init__(self, a: complex, m: complex, remainder: complex):
+		self.a = a
+		self.m = m
+		self.remainder = remainder
+
+def _gaussian_divmod(a: complex, b: complex) -> tuple[complex, complex]:
+	q = complex(round((a / b).real), round((a / b).imag))
+	return q, a - q * b
+
+def _gaussian_gcd(a: complex, b: complex) -> complex:
+	while b != 0:
+		_, r = _gaussian_divmod(a, b)
+		a, b = b, r
+	return a
+
+def _is_gaussian_unit(z: complex) -> bool:
+	return abs(abs(z) - 1) < 1e-9
+
+def _canonical_gaussian(z: complex) -> complex:
+	# gcd in Z[i] is only defined up to units (+-1, +-i).
+	# Normalizing to the first quadrant (re > 0, im >= 0)
+	# picks a unique representative for grading.
+	if z == 0: return z
+	for u in [1, -1, 1j, -1j]:
+		w = z * u
+		if w.real > 0 and w.imag >= 0: return w
+	for u in [1, -1, 1j, -1j]:
+		w = z * u
+		if w.real >= 0 and w.imag > 0: return w
+	if z.real != 0: return complex(abs(z.real), z.imag)
+	return complex(z.real, abs(z.imag))
+
+def GCD() -> tuple[str, object]:
+	if not COMPLEX:
+		g = random.randint(2, 20)
+		a = random.randint(2, 15)
+		# consecutive integers are always coprime -- zero rejection.
+		b = a + 1
+		x = g * a
+		y = g * b
+		return f'GCD[{x}, {y}]', complex(g, 0)
 	while True:
-		z1 = _rng(-8, 8)
-		# Gaussian units (+-1, +-i) cycle under exponentiation
-		# (i^1 = i^5 = i) making Log ambiguous with multiple
-		# integer answers. All other Gaussian integers are
-		# injective: z^k = z^n implies k = n. Rejection rate
-		# ~1.7% across 50k samples -- not a sparse search.
-		if abs(z1) != 1: break
-	z2 = z1 ** n
-	return f'Log[{_fmt(z1)}, {_fmt(z2)}]', complex(n, 0)
+		g_raw = complex(random.randint(-5, 5), random.randint(-5, 5))
+		if abs(g_raw) > 1 and g_raw != 0: break
+	g = _canonical_gaussian(g_raw)
+	# random Gaussian integer pairs are coprime ~67% of the time.
+	# Expected iterations: ~1.5 -- not a sparse search.
+	for _ in range(20):
+		a = complex(random.randint(1, 6), random.randint(-3, 3))
+		b = complex(random.randint(1, 6), random.randint(-3, 3))
+		if a != 0 and b != 0 and a != b and _is_gaussian_unit(_gaussian_gcd(a, b)): break
+	x = g * a
+	y = g * b
+	return f'GCD[{_fmt(x)}, {_fmt(y)}]', _UnitTolerantComplex(g)
 
-def complex_rotation():
-	z = _rng_float(-5, 5)
-	if abs(z) < 1e-9: z = complex(1, 0)
-	deg = round(random.uniform(10, 350), 1)
-	rad = math.radians(deg)
-	result = z * complex(math.cos(rad), math.sin(rad))
-	return f'{_fmt(z)} * Exp[I {deg:.1f} Degree]', result
+def Mod() -> tuple[str, object]:
+	if not COMPLEX:
+		m = random.randint(5, 30)
+		r = random.randint(0, m - 1)
+		q = random.randint(2, 30)
+		a = q * m + r
+		return f'Mod[{a}, {m}]', complex(r, 0)
+	while True:
+		m = complex(random.randint(2, 5), random.randint(0, 3))
+		if m != 0: break
+	r_raw = complex(random.randint(-4, 4), random.randint(-4, 4))
+	if r_raw == 0: r_raw = 1
+	_, r = _gaussian_divmod(r_raw, m)
+	q = complex(random.randint(1, 5), random.randint(0, 3))
+	a = q * m + r
+	return f'Mod[{_fmt(a)}, {_fmt(m)}]', _CongruenceCheck(a, m, r)
 
-def complex_angle():
-	z = _rng_float(-5, 5)
-	if abs(z) < 1e-9: z = complex(1, 0)
-	return f'Arg[{z}]', math.atan(z.imag / z.real)
+def ModularInverse() -> tuple[str, complex]:
+	p = random.choice([5, 7, 11, 13, 17, 19, 23, 29, 31])
+	a = random.randint(2, p - 1)
+	inv = pow(a, -1, p)
+	return f'ModularInverse[{a}, {p}]', complex(inv, 0)
+
+def FactorInteger() -> tuple[str, list[complex]]:
+	small_primes = [2, 3, 5, 7, 11, 13]
+	n_factors = random.randint(2, 5)
+	factors = [random.choice(small_primes) for _ in range(n_factors)]
+	n = 1
+	for f in factors: n *= f
+	return f'FactorInteger[{n}]', [complex(f, 0) for f in factors]
 
 #
 # Main
@@ -546,25 +546,25 @@ ENABLED_MODES: list[Callable[[], tuple[str, object]]] = [
 	subtraction,
 	multiplication,
 	division,
-	power,
 
-	#GCD,
-	#Mod,
-	#ModularInverse,
-	#FactorInteger,
+	#power,
+	#integer_log,
+	#complex_rotation,
+	#complex_angle,
 
-	#Binomial,
-	#FactorialPower,
-
-	Roots,
+	#Roots,
 	#matmul_2x2,
 	#inverse_2x2,
 	#determinant_2x2,
 	#eigenvalues_2x2,
 
-	#integer_log,
-	#complex_rotation,
-	#complex_angle,
+	#Binomial,
+	#FactorialPower,
+
+	#GCD,
+	#Mod,
+	#ModularInverse,
+	#FactorInteger,
 ]
 
 def _stop_game(stop_event: threading.Event, timer: threading.Timer) -> None:
