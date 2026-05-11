@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import math, cmath, random, threading
+from fractions import Fraction
 from typing import Callable
 
 DURATION = 120
@@ -28,7 +29,7 @@ COMPLEX = False
 #
 # Examples:
 #   roots       -> choose factors/roots, multiply out the polynomial
-#   eigenvalues -> choose trace/determinant or characteristic polynomial
+#   eigenvalues -> choose trace/determinant or direct matrix normal form
 #   inverse     -> choose a unimodular matrix or elementary row operations
 #   GCD         -> choose gcd and coprime cofactors
 #   Mod         -> choose modulus, remainder, and quotient
@@ -79,12 +80,11 @@ COMPLEX = False
 #
 # Constructed subfamily modes:
 #   GCD(real):
-#     current consecutive-cofactor form g*a, g*(a+1) is sound but narrow.
-#     Better: choose g, then choose/enumerate arbitrary coprime cofactors.
+#     chooses g, then finite-enumerates arbitrary coprime cofactors.
 #
 #   GCD(complex):
-#     same idea over Gaussian integers. A small coprime search is workable,
-#     but enumeration/normalization is cleaner.
+#     chooses Gaussian gcd g, then divides random cofactor-candidates by
+#     their Gaussian gcd to make them coprime.
 #
 #   Log:
 #     this is an exact discrete-log-style problem: choose base z and
@@ -98,14 +98,14 @@ COMPLEX = False
 #     coverage is desired.
 #
 #   Inverse:
-#     integer-valued inverse means determinant is a unit: +-1 in Z, +-1/+-I
-#     in Z[i]. That is not a limitation; it is the exact condition. If
-#     rational inverse answers are allowed, use a separate rational mode.
+#     integer-valued inverse means determinant is a unit: +-1 in Z, or
+#     +-1, +-I in Z[i]. That is not a limitation; it is the exact condition.
+#     If rational inverse answers are allowed, use a separate rational mode.
 #
 #   Eigenvalues:
-#     current coverage is a selected 2x2 subfamily. The broad constructive
-#     parameterization is by characteristic polynomial: choose trace t and
-#     determinant d, then use a companion matrix or unimodular conjugates.
+#     uses upper/lower triangular matrices for distinct real eigenvalues
+#     and real 2x2 block form for complex conjugate pairs. Broader coverage
+#     can use companion matrices plus bounded unimodular conjugation.
 #
 # Numeric/grid modes:
 #   Sin, Cos, Tan, ArcSin, ArcCos, ArcTan, complex_rotation:
@@ -142,27 +142,112 @@ def _rng_float(low: float, high: float, imag: bool = True) -> complex:
 # Parsing and formatting
 #
 
+def _strip_outer_parens(value: str) -> str:
+  while len(value) >= 2 and value[0] == '(' and value[-1] == ')':
+    depth = 0
+    wraps = True
+    for i, ch in enumerate(value):
+      if ch == '(':
+        depth += 1
+      elif ch == ')':
+        depth -= 1
+        if depth == 0 and i != len(value) - 1:
+          wraps = False
+          break
+      if depth < 0:
+        wraps = False
+        break
+    if not wraps or depth != 0: break
+    value = value[1:-1]
+  return value
+
+def _parse_imag_coeff(value: str) -> float:
+  if value in ('', '+'): return 1.0
+  if value == '-': return -1.0
+  return float(Fraction(value))
+
 def parse_complex_from_user(user_input: str) -> complex:
   cleaned = user_input.strip().replace(' ', '').lower()
-  if cleaned in ('i', '+i'): return 1j
-  if cleaned == '-i': return -1j
+  cleaned = _strip_outer_parens(cleaned)
+  if cleaned in ('i', '+i', 'j', '+j'): return 1j
+  if cleaned in ('-i', '-j'): return -1j
   cleaned = cleaned.replace('i', 'j')
-  return complex(cleaned)
+  if cleaned in ('j', '+j'): return 1j
+  if cleaned == '-j': return -1j
+  try:
+    return complex(cleaned)
+  except ValueError:
+    if cleaned.endswith('j'):
+      body = cleaned[:-1]
+      sep = -1
+      for i in range(1, len(body)):
+        if body[i] in '+-': sep = i
+      if sep != -1:
+        real = float(Fraction(body[:sep]))
+        imag = _parse_imag_coeff(body[sep:])
+        return complex(real, imag)
+      return complex(0, _parse_imag_coeff(body))
+    return complex(float(Fraction(cleaned)), 0)
+
+def _answer_tokens(user_input: str) -> list[str]:
+  tokens: list[str] = []
+  current: list[str] = []
+  depth = 0
+  for ch in user_input.strip():
+    if ch in '{[]}':
+      if depth == 0 and current:
+        tokens.append(''.join(current))
+        current = []
+      continue
+    if ch == '(':
+      depth += 1
+      current.append(ch)
+      continue
+    if ch == ')':
+      depth = max(0, depth - 1)
+      current.append(ch)
+      continue
+    if depth == 0 and (ch.isspace() or ch in ',;|'):
+      if current:
+        tokens.append(''.join(current))
+        current = []
+      continue
+    current.append(ch)
+  if current: tokens.append(''.join(current))
+  return tokens
+
+def _top_level_comma_parts(user_input: str) -> list[str]:
+  parts: list[str] = []
+  current: list[str] = []
+  depth = 0
+  for ch in user_input:
+    if ch == '(':
+      depth += 1
+    elif ch == ')':
+      depth = max(0, depth - 1)
+    if ch == ',' and depth == 0:
+      part = ''.join(current).strip()
+      if part: parts.append(part)
+      current = []
+    else:
+      current.append(ch)
+  part = ''.join(current).strip()
+  if part: parts.append(part)
+  return parts
+
+def parse_complex_sequence(user_input: str) -> list[complex]:
+  if ',' in user_input and '|' not in user_input and '{' not in user_input and '}' not in user_input:
+    parts = _top_level_comma_parts(user_input)
+  else:
+    parts = _answer_tokens(user_input)
+  return [parse_complex_from_user(part) for part in parts]
 
 def parse_tuple_answer(user_input: str) -> tuple:
-  parts = (user_input
-    .strip()
-    .replace(',', ' ')
-    .replace(';', ' ')
-    .replace('|', ' ')
-    .split())
-  result: list = []
-  for part in parts:
-    try: result.append(int(part))
-    except ValueError: result.append(parse_complex_from_user(part))
-  return tuple(result)
+  return tuple(parse_complex_sequence(user_input))
 
 def format_complex_cartesian(real_value: float, imag_value: float) -> str:
+  if abs(real_value) < 1e-12: real_value = 0
+  if abs(imag_value) < 1e-12: imag_value = 0
   if imag_value == 0: return str(int(real_value)) if real_value == int(real_value) else f'{real_value:.2f}'
   if real_value == 0:
     if imag_value == 1: return 'I'
@@ -286,8 +371,8 @@ def _gaussian_exact_div(a: complex, b: complex) -> complex:
   return q
 
 def _extended_gcd(a: int, b: int) -> tuple[int, int, int]:
-  """Returns (g, x, y) such that a*x + b*y = g = gcd(a,b)."""
-  old_r, r = a, b
+  """Returns (g, x, y) such that a*x + b*y = g = gcd(a,b) >= 0."""
+  old_r, r = abs(a), abs(b)
   old_s, s = 1, 0
   old_t, t = 0, 1
   while r != 0:
@@ -295,6 +380,8 @@ def _extended_gcd(a: int, b: int) -> tuple[int, int, int]:
     old_r, r = r, old_r - q * r
     old_s, s = s, old_s - q * s
     old_t, t = t, old_t - q * t
+  if a < 0: old_s = -old_s
+  if b < 0: old_t = -old_t
   return (old_r, old_s, old_t)
 
 def _gaussian_extended_gcd(a: complex, b: complex
@@ -333,16 +420,18 @@ def GCD() -> tuple[str, object]:
     x = g * u
     y = g * v
     return f'GCD[{x}, {y}]', complex(g, 0)
+
   # COMPLEX: choose gcd g, then construct coprime cofactors by
   # dividing random cofactor-candidates by their Gaussian gcd.
   g_pool = [complex(r, i) for r in range(-5, 6) for i in range(-5, 6)
             if complex(r, i) != 0 and abs(complex(r, i)) > 1]
   g_raw = random.choice(g_pool)
   g = _canonical_gaussian(g_raw)
-  # Pick any distinct nonzero a_raw, b_raw from a finite pool.
+
   raw_pool = [complex(r, i) for r in range(1, 7) for i in range(-3, 4)]
   pairs = [(a, b) for a in raw_pool for b in raw_pool if a != b]
   a_raw, b_raw = random.choice(pairs)
+
   h = _gaussian_gcd(a_raw, b_raw)
   a = _gaussian_exact_div(a_raw, h)
   b = _gaussian_exact_div(b_raw, h)
@@ -357,13 +446,14 @@ def Mod() -> tuple[str, object]:
     q = random.choice([q for q in range(-30, 31) if q != 0])
     a = q * m + r
     return f'Mod[{a}, {m}]', complex(r, 0)
-  while True:
-    m = complex(random.randint(2, 5), random.randint(0, 3))
-    if m != 0: break
+
+  m = complex(random.randint(2, 5), random.randint(0, 3))
   r_raw = complex(random.randint(-4, 4), random.randint(-4, 4))
   if r_raw == 0: r_raw = 1
   _, r = _gaussian_divmod(r_raw, m)
-  q = complex(random.randint(1, 5), random.randint(0, 3))
+  q_pool = [complex(r, i) for r in range(-5, 6) for i in range(-3, 4)
+            if r != 0 or i != 0]
+  q = random.choice(q_pool)
   a = q * m + r
   return f'Mod[{_fmt(a)}, {_fmt(m)}]', _CongruenceCheck(a, m, r)
 
@@ -408,7 +498,6 @@ def _roots_integer(degree: int) -> tuple[list[int], list[complex]]:
   return coeffs, [complex(r, 0) for r in roots_int]
 
 def _roots_rational(degree: int) -> tuple[list[int], list[complex]]:
-  from fractions import Fraction
   roots_frac = [Fraction(random.randint(-6, 6), random.randint(2, 4)) for _ in range(degree)]
   coeffs = [1]
   for r in roots_frac: coeffs = _multiply_polynomials(coeffs, [-r.numerator, r.denominator])
@@ -439,7 +528,7 @@ SQUAREFREE = [2, 3, 5, 6, 7, 10, 11, 13, 14, 15, 17, 19, 21, 22, 23]
 
 def _roots_surd_real(degree: int) -> tuple[list[int], list[complex]]:
   max_coeff = 300 if degree <= 3 else 500
-  # empirics (20k trials): coeff bound always satisfied within 5 tries; 0 failures
+  # Empirics (20k trials): coeff bound always satisfied within 5 tries; 0 failures.
   for _ in range(5):
     roots: list[complex] = []
     coeffs = [1]
@@ -450,7 +539,8 @@ def _roots_surd_real(degree: int) -> tuple[list[int], list[complex]]:
         q = 1
         r = random.randint(1, 3)
         d = random.choice(SQUAREFREE[:8] if degree >= 3 else SQUAREFREE)
-        # Roots (p +- q*sqrt(d))/r: quadratic factor is r^2 x^2 - 2pr x + (p^2 - q^2 d)
+        # Roots (p +- q*sqrt(d))/r:
+        # factor = r^2 x^2 - 2pr x + (p^2 - q^2 d)
         factor = [p * p - q * q * d, -2 * p * r, r * r]
         coeffs = _multiply_polynomials(coeffs, factor)
         sqrt_d = math.sqrt(d)
@@ -467,7 +557,7 @@ def _roots_surd_real(degree: int) -> tuple[list[int], list[complex]]:
 
 def _roots_surd_complex(degree: int) -> tuple[list[int], list[complex]]:
   max_coeff = 300 if degree <= 3 else 500
-  # empirics (20k trials): coeff bound always satisfied within 5 tries; 0 failures
+  # Empirics (20k trials): coeff bound always satisfied within 5 tries; 0 failures.
   for _ in range(5):
     roots: list[complex] = []
     coeffs = [1]
@@ -478,7 +568,8 @@ def _roots_surd_complex(degree: int) -> tuple[list[int], list[complex]]:
         q = 1
         r = random.randint(1, 3)
         d = random.choice(SQUAREFREE[:8] if degree >= 3 else SQUAREFREE)
-        # Roots (p +- qi*sqrt(d))/r: quadratic factor is r^2 x^2 - 2pr x + (p^2 + q^2 d)
+        # Roots (p +- qi*sqrt(d))/r:
+        # factor = r^2 x^2 - 2pr x + (p^2 + q^2 d)
         factor = [p * p + q * q * d, -2 * p * r, r * r]
         coeffs = _multiply_polynomials(coeffs, factor)
         sqrt_d = math.sqrt(d)
@@ -507,8 +598,7 @@ def _roots_mixed(degree: int) -> tuple[list[int], list[complex]]:
         roots.append(complex(r, 0))
         coeffs = _multiply_polynomials(coeffs, [-r, 1])
         rem -= 1
-      elif kind == 'rat' and rem >= 1:
-        from fractions import Fraction
+      elif kind == 'rat':
         r = Fraction(random.randint(-6, 6), random.randint(2, 4))
         roots.append(complex(float(r), 0))
         coeffs = _multiply_polynomials(coeffs, [-r.numerator, r.denominator])
@@ -550,12 +640,14 @@ def Roots() -> tuple[str, list[complex]]:
   elif strategy == 'repeated': coeffs, roots = _roots_repeated(degree)
   elif strategy == 'mixed': coeffs, roots = _roots_mixed(degree)
   else: coeffs, roots = _roots_integer(degree)
-  # Optional scalar leading coefficient (non-monic polynomials)
+
+  # Optional scalar leading coefficient (non-monic polynomials).
   if random.random() < 0.3:
     s = random.randint(2, 3)
     scaled = [c * s for c in coeffs]
     if max(abs(c) for c in scaled) <= 500:
       coeffs = scaled
+
   return f'Roots[{_format_polynomial(coeffs)} == 0, x]', roots
 
 # Matrix 2D
@@ -576,10 +668,11 @@ def matrix_multiply():
 _gaussian_inv_cache: dict = {}
 
 def _gaussian_inverse_candidates(det: complex, bound: int) -> list:
-  """Enumerate all (a,b,c,d) within bounds with ad - bc = det, cached per det."""
+  """Enumerate bounded Gaussian unimodular matrices by completing primitive top rows."""
   key = (round(det.real), round(det.imag), bound)
   if key in _gaussian_inv_cache:
     return _gaussian_inv_cache[key]
+
   pool = [complex(r, i) for r in range(-bound, bound + 1)
           for i in range(-bound, bound + 1)
           if r != 0 or i != 0]
@@ -594,15 +687,14 @@ def _gaussian_inverse_candidates(det: complex, bound: int) -> list:
       if (abs(c.real) <= bound and abs(c.imag) <= bound and
           abs(d.real) <= bound and abs(d.imag) <= bound):
         candidates.append((a, b, c, d))
+
   _gaussian_inv_cache[key] = candidates
   return candidates
 
-
 def Inverse():
-  # Restrict |det| = 1 so A⁻¹ = adj(A)/det has integer entries:
-  # det = +-1 in Z, or det in {+-1, +-i} in Z[i].
-  # Construct a,b first, then use Bezout to find c,d with ad - bc = det.
+  # Restrict |det| = 1 so A^-1 = adj(A)/det has integer entries.
   bound = 8
+
   if not COMPLEX:
     det = random.choice([-1, 1])
     candidates = []
@@ -611,27 +703,30 @@ def Inverse():
         if b_val == 0: continue
         if math.gcd(abs(a_val), abs(b_val)) != 1: continue
         g, x, y = _extended_gcd(a_val, b_val)
-        c_val = -det * y * g
-        d_val = det * x * g
+        if g != 1: continue
+        c_val = -det * y
+        d_val = det * x
         if abs(c_val) <= bound and abs(d_val) <= bound:
           candidates.append((a_val, b_val, c_val, d_val))
+
+    if not candidates:
+      raise RuntimeError('no real unimodular inverse candidates within bounds')
+
     a_val, b_val, c_val, d_val = random.choice(candidates)
     a = complex(a_val, 0); b = complex(b_val, 0)
     c = complex(c_val, 0); d = complex(d_val, 0)
-    if det == 1: inv = (d, -b, -c, a)
-    else: inv = (-d, b, c, -a)
+    scale = 1 / det
+    inv = (scale * d, -scale * b, -scale * c, scale * a)
     return f'Inverse{format_matrix([[a, b], [c, d]])}', inv
 
-  # COMPLEX: enumerate all Gaussian integer pairs once, cache per det value.
   det = random.choice([-1, 1, 1j, -1j])
   candidates = _gaussian_inverse_candidates(det, bound)
   if not candidates:
     raise RuntimeError('no Gaussian unimodular inverse candidates within bounds')
+
   a, b, c, d = random.choice(candidates)
-  if det == 1: inv = (d, -b, -c, a)
-  elif det == -1: inv = (-d, b, c, -a)
-  elif det == 1j: inv = (-1j * d, 1j * b, 1j * c, -1j * a)
-  else: inv = (1j * d, -1j * b, -1j * c, 1j * a)
+  scale = 1 / det
+  inv = (scale * d, -scale * b, -scale * c, scale * a)
   return f'Inverse{format_matrix([[a, b], [c, d]])}', inv
 
 def Det():
@@ -641,21 +736,24 @@ def Det():
 
 def Eigenvalues():
   strategy = random.choice(['real_diagonalizable', 'complex_conjugate_pair'])
+
   if strategy == 'real_diagonalizable':
     l1 = random.randint(-8, 8)
     l2 = random.choice([x for x in range(-8, 9) if x != l1])
+
     # Triangular construction: eigenvalues are on the diagonal.
     # Small off-diagonal entry for variety; covers diagonal case (k=0).
     k = random.randint(-3, 3)
     if random.choice([True, False]):
-      a, b, c, d = l1, k, 0, l2    # upper triangular
+      a, b, c, d = l1, k, 0, l2
     else:
-      a, b, c, d = l1, 0, k, l2    # lower triangular
+      a, b, c, d = l1, 0, k, l2
+
     return f'Eigenvalues{format_matrix([[a, b], [c, d]])}', (complex(l1, 0), complex(l2, 0))
-  # Complex conjugate eigenvalues re +/- i*im
+
+  # Real block form [[re, -im], [im, re]] has eigenvalues re +- i*im.
   re = random.randint(-3, 3)
   im = random.randint(1, 3)
-  # Canonical real block form [[re, -im], [im, re]] has eigenvalues re +/- i*im
   a, b, c, d = re, -im, im, re
   return f'Eigenvalues{format_matrix([[a, b], [c, d]])}', (complex(re, im), complex(re, -im))
 
@@ -728,7 +826,7 @@ def _stop_game(stop_event: threading.Event, timer: threading.Timer) -> None:
 
 if __name__ == '__main__':
   score = 0
-  correct_answer: complex | tuple | list | None = None
+  correct_answer: object | None = None
   keep_running = threading.Event()
   keep_running.set()
   game_timer = threading.Timer(DURATION, keep_running.clear)
@@ -740,13 +838,13 @@ if __name__ == '__main__':
   def format_final_answer(answer: object) -> str:
     if isinstance(answer, _UnitTolerantComplex): return _fres(answer.canonical)
     if isinstance(answer, _CongruenceCheck): return _fres(answer.remainder)
-    if isinstance(answer, list): return ', '.join(_fres(v) for v in answer)
+    if isinstance(answer, list): return ', '.join(_fmt(v) for v in answer)
     if isinstance(answer, tuple):
       if len(answer) == 4: return format_matrix([[answer[0], answer[1]], [answer[2], answer[3]]])
       if len(answer) == 9: return format_matrix([[answer[0], answer[1], answer[2]],
                                                  [answer[3], answer[4], answer[5]],
                                                  [answer[6], answer[7], answer[8]]])
-      return ', '.join(_fres(v) for v in answer)
+      return ', '.join(_fmt(v) for v in answer)
     if isinstance(answer, complex): return _fres(answer)
     return str(answer)
 
@@ -763,16 +861,17 @@ if __name__ == '__main__':
           if isinstance(correct_answer, _UnitTolerantComplex):
             parsed = parse_complex_from_user(user_input)
             if abs(_canonical_gaussian(parsed) - correct_answer.canonical) < 0.01: break
+
           elif isinstance(correct_answer, _CongruenceCheck):
             parsed = parse_complex_from_user(user_input)
             diff = correct_answer.a - parsed
             if diff == 0: break
             q = diff / correct_answer.m
             if abs(q.real - round(q.real)) < 1e-9 and abs(q.imag - round(q.imag)) < 1e-9: break
+
           elif isinstance(correct_answer, list):
-            parts = [p.strip() for p in user_input.replace(',', ' ').split() if p.strip()]
-            if len(parts) != len(correct_answer): continue
-            parsed = [parse_complex_from_user(p) for p in parts]
+            parsed = parse_complex_sequence(user_input)
+            if len(parsed) != len(correct_answer): continue
             matched = [False] * len(correct_answer)
             for u in parsed:
               found = False
@@ -784,6 +883,7 @@ if __name__ == '__main__':
               if not found: break
             else:
               if all(matched): break
+
           elif isinstance(correct_answer, tuple):
             parsed = parse_tuple_answer(user_input)
             if len(parsed) == len(correct_answer):
@@ -793,19 +893,33 @@ if __name__ == '__main__':
                 for u in parsed:
                   found = False
                   for i, e in enumerate(correct_answer):
-                    if not used[i] and abs(u - e) < 0.01: used[i] = True; found = True; break
-                  if not found: ok = False; break
+                    if not used[i] and abs(u - e) < 0.01:
+                      used[i] = True
+                      found = True
+                      break
+                  if not found:
+                    ok = False
+                    break
                 if ok: break
-              elif parsed == correct_answer: break
+              elif parsed == correct_answer:
+                break
+
           elif isinstance(correct_answer, complex):
             parsed = parse_complex_from_user(user_input)
             if abs(parsed - correct_answer) / (abs(correct_answer) or 1) <= 0.01: break
+
           else:
             parsed = float(user_input)
             if abs(parsed - correct_answer) < 0.01: break
-        except (ValueError, TypeError): continue
 
-      if keep_running.is_set(): score += 1; print(f'Score: {score}')
+        except (ValueError, TypeError, ZeroDivisionError): continue
 
-  except (KeyboardInterrupt, EOFError): quit_game()
-  if correct_answer is not None: print(f'Answer: {format_final_answer(correct_answer)}')
+      if keep_running.is_set():
+        score += 1
+        print(f'Score: {score}')
+
+  except (KeyboardInterrupt, EOFError):
+    quit_game()
+
+  if correct_answer is not None:
+    print(f'Answer: {format_final_answer(correct_answer)}')
