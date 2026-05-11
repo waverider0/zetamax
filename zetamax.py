@@ -49,7 +49,7 @@ COMPLEX = False
 # has an elementary antiderivative. The intersection of "nice integrand"
 # and "nice integral" is sparse with no known constructive
 # parameterization. Algebra is tractable because its maps are polynomial;
-# calculus is not because its maps are transcendental. That is the line.
+# calculus is not because its maps are transcendental.
 
 def _rng(low: int, high: int, imag: bool = True) -> complex:
 	real = random.randint(low, high)
@@ -148,7 +148,7 @@ def format_matrix(rows: list[list]) -> str:
 	return '{' + ' | '.join(' '.join(_fmt(v) for v in row) for row in rows) + '}'
 
 #
-# arithmetic
+# arithmetic generators
 #
 
 def addition() -> tuple[str, complex]:
@@ -174,105 +174,48 @@ def division() -> tuple[str, complex]:
 
 def power() -> tuple[str, complex]:
 	z = _rng(2, 10)
-	x = random.randint(2, 4)
+	x = random.randint(2, 8)
 	return f'{_fmt(z)}^{x}', z ** x
 
 #
-# transcendental
+# transcendental generators --intentionally minimal
 #
 
-def Exp():
-	z = _rng_float(-2, 2)
-	return f'Exp[{_fmt(z)}]', cmath.exp(z)
-
-def Log():
-	x = _rng(2, 1000, imag=False)
-	return f'Log[{_fmt(x)}]', cmath.log(x)
-
-def LogBase():
-	b = _rng(2, 16, imag=False)
-	x = _rng(2, 1000, imag=False)
-	return f'Log[{_fmt(b)}, {_fmt(x)}]', cmath.log(x)/cmath.log(b)
-
-def Sin():
-	z = _rng_float(0, math.pi/2)
-	return f'Sin[{_fmt(z)}]', cmath.sin(z)
-
-def Cos():
-	z = _rng_float(0, math.pi/2)
-	return f'Cos[{_fmt(z)}]', cmath.cos(z)
-
-def Tan():
-	z = _rng_float(0, math.pi / 3)
-	return f'Tan[{_fmt(z)}]', cmath.tan(z)
-
-def ArcSin():
-	x = round(random.uniform(0, 1), 2)
-	return f'ArcSin[{x}]', math.asin(x)
-
-def ArcCos():
-	x = round(random.uniform(0, 1), 2)
-	return f'ArcCos[{x}]', math.acos(x)
-
-def ArcTan():
-	x = round(random.uniform(0, 5), 2)
-	return f'ArcTan[{x}]', math.atan(x)
-
-def Arg():
-	z = _rng_float(-5, 5)
-	if abs(z) < 1e-9: z = complex(1, 0)
-	return f'Arg[{z}]', math.atan(z.imag / z.real)
+def integer_log():
+	n = random.randint(2, 6)
+	while True:
+		z1 = _rng(-8, 8)
+		# Gaussian units (+-1, +-i) cycle under exponentiation
+		# (i^1 = i^5 = i) making Log ambiguous with multiple
+		# integer answers. All other bases in [-8,8]^2 are
+		# injective: z^k = z^n implies k = n. Rejection rate
+		# ~1.7% across 50k samples -- not a sparse search.
+		if abs(z1) != 1:
+			break
+	z2 = z1 ** n
+	return f'Log[{_fmt(z1)}, {_fmt(z2)}]', complex(n, 0)
 
 def complex_rotation():
 	z = _rng_float(-5, 5)
-	if abs(z) < 1e-9:
-		z = complex(1, 0)
+	if abs(z) < 1e-9: z = complex(1, 0)
 	deg = round(random.uniform(10, 350), 1)
 	rad = math.radians(deg)
 	result = z * complex(math.cos(rad), math.sin(rad))
 	return f'{_fmt(z)} * Exp[I {deg:.1f} Degree]', result
 
+def complex_angle():
+	z = _rng_float(-5, 5)
+	if abs(z) < 1e-9: z = complex(1, 0)
+	return f'Arg[{z}]', math.atan(z.imag / z.real)
+
 #
-# matrix
+# Matrix 2D
 #
 
 def determinant_2x2():
 	a, b = _rng(-8, 8), _rng(-8, 8)
 	c, d = _rng(-8, 8), _rng(-8, 8)
 	return f'Det{format_matrix([[a, b], [c, d]])}', a * d - b * c
-
-def determinant_3x3():
-	target_det = _rng(-10, 10)
-	if target_det == 0:
-		target_det = complex(random.choice([-1, 1]), random.randint(0, 5) if COMPLEX else 0)
-		if target_det == 0:
-			target_det = complex(1, 0)
-
-	d1 = complex(1, 0)
-	d2 = complex(1, 0)
-	d3 = target_det
-
-	# A = L·U with L unit lower-triangular, U upper-triangular.
-	# det(A) = det(L)·det(U) = 1 · d1·d2·d3 = target_det
-	u12 = _rng(-2, 2)
-	u13 = _rng(-2, 2)
-	u23 = _rng(-2, 2)
-	l21 = _rng(-2, 2)
-	l31 = _rng(-2, 2)
-	l32 = _rng(-2, 2)
-
-	rows = [
-		[d1, u12, u13],
-		[l21 * d1, l21 * u12 + d2, l21 * u13 + u23],
-		[l31 * d1, l31 * u12 + l32 * d2, l31 * u13 + l32 * u23 + d3]
-	]
-
-	if random.random() < 0.3:
-		r1, r2 = random.sample([0, 1, 2], 2)
-		rows[r1], rows[r2] = rows[r2], rows[r1]
-		target_det = -target_det
-
-	return f'Det{format_matrix(rows)}', target_det
 
 def matmul_2x2():
 	a11, a12 = _rng(-4, 4), _rng(-4, 4)
@@ -287,24 +230,15 @@ def matmul_2x2():
 	B = format_matrix([[b11, b12], [b21, b22]])
 	return f'{A} * {B}', (r11, r12, r21, r22)
 
-def matmul_3x3():
-	A = [[_rng(-2, 2) for _ in range(3)] for _ in range(3)]
-	B = [[_rng(-2, 2) for _ in range(3)] for _ in range(3)]
-	C = [[sum(A[i][k] * B[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
-	flat = tuple(v for row in C for v in row)
-	return f'{format_matrix(A)} * {format_matrix(B)}', flat
-
 def inverse_2x2():
 	# Restrict |det| = 1 so A⁻¹ = adj(A)/det has Gaussian integer entries.
 	det = random.choice([-1, 1, 1j, -1j]) if COMPLEX else random.choice([-1, 1])
 	bound = 4
-
 	for _ in range(50):
 		a = _rng(-bound, bound)
 		b = _rng(-bound, bound)
 		if a == 0 or b == 0:
 			continue
-
 		for d_real in range(-bound, bound + 1):
 			for d_imag in range(-bound, bound + 1):
 				d = complex(d_real, d_imag)
@@ -318,18 +252,78 @@ def inverse_2x2():
 					if -bound <= cr <= bound and -bound <= ci <= bound:
 						c = complex(cr, ci)
 						if b != 0 and c != 0:
-							if det == 1:
-								inv = (d, -b, -c, a)
-							elif det == -1:
-								inv = (-d, b, c, -a)
-							elif det == 1j:
-								inv = (-1j * d, 1j * b, 1j * c, -1j * a)
-							else:
-								inv = (1j * d, -1j * b, -1j * c, 1j * a)
+							if det == 1: inv = (d, -b, -c, a)
+							elif det == -1: inv = (-d, b, c, -a)
+							elif det == 1j: inv = (-1j * d, 1j * b, 1j * c, -1j * a)
+							else: inv = (1j * d, -1j * b, -1j * c, 1j * a)
 							return f'Inverse{format_matrix([[a, b], [c, d]])}', inv
-
 	I = format_matrix([[1, 0], [0, 1]])
 	return f'Inverse{I}', (1, 0, 0, 1)
+
+def eigenvalues_2x2():
+	strategy = random.choice(['real_diagonalizable', 'complex_conjugate_pair'])
+	bound = 8
+	if strategy == 'real_diagonalizable':
+		lam1 = random.randint(-5, 5)
+		lam2 = random.randint(-5, 5)
+		if lam1 == lam2: lam2 += random.choice([-1, 1])
+		trace = lam1 + lam2
+		det_val = lam1 * lam2
+		# Characteristic polynomial: λ² - tr(A)·λ + det(A).
+		# For eigenvalues λ₁,λ₂ we need tr(A)=λ₁+λ₂ and det(A)=λ₁λ₂.
+		# Pick a, set d = tr - a, then find b,c such that ad - bc = det.
+		candidates = []
+		for a in range(-bound, bound + 1):
+			d = trace - a
+			if abs(d) > bound:
+				continue
+			bc = a * d - det_val
+			if bc == 0:
+				continue
+			for b in range(-bound, bound + 1):
+				if b == 0:
+					continue
+				if bc % b == 0:
+					c = bc // b
+					if abs(c) <= bound and c != 0:
+						candidates.append((a, b, c, d))
+		if candidates: a, b, c, d = random.choice(candidates)
+		else: a, b, c, d = lam1 + lam2, 1, 1, lam1 + lam2 - 1  # fallback
+		return f'Eigenvalues{format_matrix([[a, b], [c, d]])}', (complex(lam1, 0), complex(lam2, 0))
+	# Complex: eigenvalues re +/- i*im
+	re = random.randint(-3, 3)
+	im = random.randint(1, 3)
+	trace = 2 * re
+	det_val = re * re + im * im
+	candidates = []
+	for a in range(-bound, bound + 1):
+		d = trace - a
+		if abs(d) > bound:
+			continue
+		bc = a * d - det_val
+		if bc == 0:
+			continue
+		for b in range(-bound, bound + 1):
+			if b == 0:
+				continue
+			if bc % b == 0:
+				c = bc // b
+				if abs(c) <= bound and c != 0:
+					candidates.append((a, b, c, d))
+	if candidates: a, b, c, d = random.choice(candidates)
+	else: a, b, c, d = re, -im, im, re  # fallback: canonical form
+	return f'Eigenvalues{format_matrix([[a, b], [c, d]])}', (complex(re, im), complex(re, -im))
+
+#
+# Matrix 3D
+#
+
+def matmul_3x3():
+	A = [[_rng(-2, 2) for _ in range(3)] for _ in range(3)]
+	B = [[_rng(-2, 2) for _ in range(3)] for _ in range(3)]
+	C = [[sum(A[i][k] * B[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+	flat = tuple(v for row in C for v in row)
+	return f'{format_matrix(A)} * {format_matrix(B)}', flat
 
 def inverse_3x3() -> tuple[str, tuple[complex, ...]]:
 	A = [[complex(1, 0), complex(0, 0), complex(0, 0)],
@@ -375,77 +369,34 @@ def inverse_3x3() -> tuple[str, tuple[complex, ...]]:
 	flat = tuple(v for row in inv for v in row)
 	return f'Inverse{format_matrix(A)}', flat
 
-def eigenvalues_2x2():
-	strategy = random.choice(['real_diagonalizable', 'complex_conjugate_pair'])
-	bound = 8
-
-	if strategy == 'real_diagonalizable':
-		lam1 = random.randint(-5, 5)
-		lam2 = random.randint(-5, 5)
-		if lam1 == lam2:
-			lam2 += random.choice([-1, 1])
-
-		trace = lam1 + lam2
-		det_val = lam1 * lam2
-
-		# Characteristic polynomial: λ² - tr(A)·λ + det(A).
-		# For eigenvalues λ₁,λ₂ we need tr(A)=λ₁+λ₂ and det(A)=λ₁λ₂.
-		# Pick a, set d = tr - a, then find b,c such that ad - bc = det.
-		candidates = []
-		for a in range(-bound, bound + 1):
-			d = trace - a
-			if abs(d) > bound:
-				continue
-			bc = a * d - det_val
-			if bc == 0:
-				continue
-			for b in range(-bound, bound + 1):
-				if b == 0:
-					continue
-				if bc % b == 0:
-					c = bc // b
-					if abs(c) <= bound and c != 0:
-						candidates.append((a, b, c, d))
-
-		if candidates:
-			a, b, c, d = random.choice(candidates)
-		else:
-			a, b, c, d = lam1 + lam2, 1, 1, lam1 + lam2 - 1  # fallback
-
-		return f'Eigenvalues{format_matrix([[a, b], [c, d]])}', (complex(lam1, 0), complex(lam2, 0))
-
-	# Complex: eigenvalues re +/- i*im
-	re = random.randint(-3, 3)
-	im = random.randint(1, 3)
-
-	trace = 2 * re
-	det_val = re * re + im * im
-
-	candidates = []
-	for a in range(-bound, bound + 1):
-		d = trace - a
-		if abs(d) > bound:
-			continue
-		bc = a * d - det_val
-		if bc == 0:
-			continue
-		for b in range(-bound, bound + 1):
-			if b == 0:
-				continue
-			if bc % b == 0:
-				c = bc // b
-				if abs(c) <= bound and c != 0:
-					candidates.append((a, b, c, d))
-
-	if candidates:
-		a, b, c, d = random.choice(candidates)
-	else:
-		a, b, c, d = re, -im, im, re  # fallback: canonical form
-
-	return f'Eigenvalues{format_matrix([[a, b], [c, d]])}', (complex(re, im), complex(re, -im))
+def determinant_3x3():
+	target_det = _rng(-10, 10)
+	if target_det == 0: target_det = complex(random.choice([-1, 1]), random.randint(0, 5) if COMPLEX else 0)
+	if target_det == 0: target_det = complex(1, 0)
+	d1 = complex(1, 0)
+	d2 = complex(1, 0)
+	d3 = target_det
+	# A = L·U with L unit lower-triangular, U upper-triangular.
+	# det(A) = det(L)·det(U) = 1 · d1·d2·d3 = target_det
+	u12 = _rng(-2, 2)
+	u13 = _rng(-2, 2)
+	u23 = _rng(-2, 2)
+	l21 = _rng(-2, 2)
+	l31 = _rng(-2, 2)
+	l32 = _rng(-2, 2)
+	rows = [
+		[d1, u12, u13],
+		[l21 * d1, l21 * u12 + d2, l21 * u13 + u23],
+		[l31 * d1, l31 * u12 + l32 * d2, l31 * u13 + l32 * u23 + d3]
+	]
+	if random.random() < 0.3:
+		r1, r2 = random.sample([0, 1, 2], 2)
+		rows[r1], rows[r2] = rows[r2], rows[r1]
+		target_det = -target_det
+	return f'Det{format_matrix(rows)}', target_det
 
 #
-# polynomial
+# Polynomial
 #
 
 def _multiply_polynomials(p: list[int], q: list[int]) -> list[int]:
@@ -579,7 +530,7 @@ def _roots_repeated(degree: int) -> tuple[list[int], list[complex]]:
 	return coeffs, [complex(r, 0) for r in roots_int]
 
 def Roots() -> tuple[str, list[complex]]:
-	degree = random.choices([2, 3, 4], weights=[80, 15, 5], k=1)[0]
+	degree = random.choices([2, 3, 4], weights=[90, 10, 1], k=1)[0]
 	strategies = ['integer', 'rational', 'surd_real', 'repeated']
 	if COMPLEX: strategies.extend(['gaussian', 'surd_complex'])
 	strategy = random.choice(strategies)
@@ -589,7 +540,8 @@ def Roots() -> tuple[str, list[complex]]:
 	elif strategy == 'surd_real': coeffs, roots = _roots_surd_real(degree)
 	elif strategy == 'surd_complex': coeffs, roots = _roots_surd_complex(degree)
 	elif strategy == 'repeated': coeffs, roots = _roots_repeated(degree)
-	else: coeffs, roots = _roots_integer(degree)
+	else:
+		coeffs, roots = _roots_integer(degree)
 	return f'Roots[{_format_polynomial(coeffs)} == 0, x]', roots
 
 #
@@ -602,28 +554,20 @@ ENABLED_MODES: list[Callable[[], tuple[str, object]]] = [
 	multiplication,
 	division,
 	power,
+	Roots,
 
-	#Exp,
-	#Log,
-	#LogBase,
-	#Sin,
-	#Cos,
-	#Tan,
-	#ArcSin,
-	#ArcCos,
-	#ArcTan,
-	#Arg,
+	#integer_log,
 	#complex_rotation,
+	#complex_angle,
 
-	#determinant_2x2,
 	#matmul_2x2,
 	#inverse_2x2,
+	#determinant_2x2,
 	#eigenvalues_2x2,
-	#determinant_3x3,
+
 	#matmul_3x3,
 	#inverse_3x3,
-
-	Roots,
+	#determinant_3x3,
 ]
 
 def _stop_game(stop_event: threading.Event, timer: threading.Timer) -> None:
@@ -632,7 +576,7 @@ def _stop_game(stop_event: threading.Event, timer: threading.Timer) -> None:
 
 if __name__ == '__main__':
 	score = 0
-	correct_answer: complex | tuple | list = complex(0, 0)
+	correct_answer: complex | tuple | list | None = None
 	keep_running = threading.Event()
 	keep_running.set()
 	game_timer = threading.Timer(DURATION, keep_running.clear)
@@ -728,5 +672,5 @@ if __name__ == '__main__':
 	except (KeyboardInterrupt, EOFError):
 		quit_game()
 
-	if correct_answer != complex(0, 0):
+	if correct_answer is not None:
 		print(f'Answer: {format_final_answer(correct_answer)}')
