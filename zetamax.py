@@ -4,9 +4,6 @@ import math, cmath, random, threading
 from fractions import Fraction
 from typing import Callable
 
-DURATION = 120
-COMPLEX = False
-
 # The naive way to build a math problem generator is rejection sampling:
 # roll a random problem, compute the answer, then reject it if the answer
 # is not "nice" -- too large, non-integral, ugly radical, ambiguous, etc.
@@ -384,8 +381,7 @@ def _extended_gcd(a: int, b: int) -> tuple[int, int, int]:
   if b < 0: old_t = -old_t
   return (old_r, old_s, old_t)
 
-def _gaussian_extended_gcd(a: complex, b: complex
-                           ) -> tuple[complex, complex, complex]:
+def _gaussian_extended_gcd(a: complex, b: complex) -> tuple[complex, complex, complex]:
   """Returns (g, x, y) such that a*x + b*y = g = gaussian_gcd(a,b)."""
   old_r, r = a, b
   old_s, s = complex(1, 0), complex(0, 0)
@@ -445,7 +441,8 @@ def Mod() -> tuple[str, object]:
     r = random.randint(0, m - 1)
     q = random.choice([q for q in range(-30, 31) if q != 0])
     a = q * m + r
-    return f'Mod[{a}, {m}]', complex(r, 0)
+    return f'{a} % {m}', complex(r, 0)
+    #return f'Mod[{a}, {m}]', complex(r, 0)
 
   m = complex(random.randint(2, 5), random.randint(0, 3))
   r_raw = complex(random.randint(-4, 4), random.randint(-4, 4))
@@ -794,6 +791,9 @@ def complex_rotation():
 #
 # Game settings and main loop
 #
+
+DURATION = 120
+COMPLEX = False
 
 ENABLED_MODES: list[Callable[[], tuple[str, object]]] = [
   Plus,
