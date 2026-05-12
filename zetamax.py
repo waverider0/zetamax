@@ -4,136 +4,67 @@ import math, cmath, random, threading
 from fractions import Fraction
 from typing import Callable
 
-# The naive way to build a math problem generator is rejection sampling:
-# roll a random problem, compute the answer, then reject it if the answer
-# is not "nice" -- too large, non-integral, ugly radical, ambiguous, etc.
+# Opus 4.6:
 #
-# For basic arithmetic this is harmless. Addition, subtraction, and
-# multiplication preserve integer/Gaussian-integer niceness automatically.
-# Pick legal operands and the answer is legal. There is nothing sparse to
-# hit.
+# Every generator emits a (problem, answer) pair by running a computation in
+# its cheap direction. The student inverts it.
 #
-# Outside basic arithmetic, naive rejection usually fails. "Nice problem"
-# and "nice answer" often define two thin subsets whose intersection is
-# sparse and irregular. The old eigenvalue approach was the bad pattern:
-# sample a random construction, hope the matrix entries stay in bounds,
-# then fall back to a hardcoded matrix when the search misses. That causes
-# biased output, variable runtime, and mode collapse.
+#   arithmetic    choose operands, apply the operation
+#   roots         choose factors, multiply out
+#   eigenvalues   choose spectrum, build A
+#   inverse       choose a unimodular matrix
+#   GCD           choose gcd and coprime cofactors, multiply up
+#   Mod           choose modulus, remainder, quotient
+#   integrals     choose antiderivative template, differentiate
 #
-# The default for nontrivial algebra should be structure-first generation:
-# choose the clean answer or algebraic structure first, then project
-# forward to the displayed problem.
+# Arithmetic is trivially dense. Integers are closed under addition,
+# subtraction, and multiplication. Every random operand pair yields a clean
+# answer. No construction machinery needed.
 #
-# Examples:
-#   roots       -> choose factors/roots, multiply out the polynomial
-#   eigenvalues -> choose trace/determinant or direct matrix normal form
-#   inverse     -> choose a unimodular matrix or elementary row operations
-#   GCD         -> choose gcd and coprime cofactors
-#   Mod         -> choose modulus, remainder, and quotient
+# Algebra is sparse but constructible. Random integer polynomials almost never
+# factor nicely. Random matrices almost never have integer inverses or clean
+# eigenvalues. Rejection sampling hits a thin irregular target. But the forward
+# maps are total and integer-preserving: polynomial multiplication takes integer
+# roots to integer coefficients, Bezout completion takes a unit determinant to a
+# unimodular matrix, multiplying a gcd by coprime cofactors gives the displayed
+# pair. Start with a nice answer, push forward, land in a clean problem.
+# Soundness is automatic.
 #
-# This gives the important guarantee:
+# Coverage is separate. Each forward construction is a coordinate patch on the
+# space of valid problems. Triangular eigenvalue builders cover triangular
+# matrices. Surd factor families cover specific quadratic extensions. Broaden
+# coverage by writing constructions, not by widening rejection. Equivalences
+# need deliberate handling: Gaussian gcds up to unit associates, modular answers
+# as congruence classes, roots and eigenvalues as unordered multisets, log bases
+# chosen to avoid ambiguity.
 #
-#   Soundness: every emitted problem has the advertised answer.
+# Calculus is a different kind of problem. The forward map no longer preserves
+# the target region. In algebra, the constraint is integrality — a lattice that
+# polynomial multiplication, Bezout completion, and matrix products all respect.
+# In calculus, the constraint is displayability: short, recognizable,
+# pedagogically conventional expressions. This is a property of syntax trees.
+# It has no algebraic characterization. Its boundary is nowhere smooth. The
+# chain rule, product rule, and quotient rule grow expressions freely.
+# Differentiating a short clean antiderivative routinely produces something
+# longer and unrecognizable. Starting from a nice answer and pushing forward is
+# still necessary, but it is not sufficient on its own. Calculus generators need
+# curated template families with strict expression budgets, machinery with no
+# analogue in the algebra generators.
 #
-# It often also gives predictable cost, because the generator does not
-# depend on accidentally hitting a rare intersection. But this is not a
-# religion. Small rejection filters are allowed when they are local,
-# measured, and boring:
-#
-#   - the main structure has already been constructed;
-#   - the rejection predicate only removes edge cases;
-#   - hit rate is high enough to be practically irrelevant;
-#   - the retry count is small and bounded, or the valid candidates are
-#     enumerated directly;
-#   - failure never falls back to a hardcoded problem.
-#
-# Rejection is a smoothing tool, not the primary strategy.
-#
-# Also: constructive does not imply full coverage. Coverage depends on
-# the parameterization.
-#
-# Direct/free-variable modes:
-#   Plus, Minus, Times:
-#     direct over chosen operands.
-#
-#   Divide:
-#     direct over chosen integer/Gaussian-integer operands; answers may be
-#     rational/Gaussian-rational.
-#
-#   Power:
-#     direct over base and positive integer exponent. The answer set is
-#     only perfect powers; that is inherent.
-#
-#   Det, matrix_multiply:
-#     direct over chosen 2x2 matrices. Dimension is fixed by design.
-#
-#   Binomial, FactorialPower:
-#     direct over chosen (n, k) domain. The answer values are sparse by
-#     nature.
-#
-#   Mod:
-#     direct over (modulus, remainder, quotient). To cover all dividends,
-#     the quotient range must include negative values too.
-#
-# Constructed subfamily modes:
-#   GCD(real):
-#     chooses g, then finite-enumerates arbitrary coprime cofactors.
-#
-#   GCD(complex):
-#     chooses Gaussian gcd g, then divides random cofactor-candidates by
-#     their Gaussian gcd to make them coprime.
-#
-#   Log:
-#     this is an exact discrete-log-style problem: choose base z and
-#     exponent n, emit Log[z, z^n]. Exclude 0 and units directly; do not
-#     rely on broad rejection.
-#
-#   Roots:
-#     covers the chosen factor families: integer, rational, repeated,
-#     Gaussian-pair, and selected surd factors. This is not the full space
-#     of all integer polynomials. Add factor families when broader
-#     coverage is desired.
-#
-#   Inverse:
-#     integer-valued inverse means determinant is a unit: +-1 in Z, or
-#     +-1, +-I in Z[i]. That is not a limitation; it is the exact condition.
-#     If rational inverse answers are allowed, use a separate rational mode.
-#
-#   Eigenvalues:
-#     uses upper/lower triangular matrices for distinct real eigenvalues
-#     and real 2x2 block form for complex conjugate pairs. Broader coverage
-#     can use companion matrices plus bounded unimodular conjugation.
-#
-# Numeric/grid modes:
-#   Sin, Cos, Tan, ArcSin, ArcCos, ArcTan, complex_rotation:
-#     sampled on a decimal grid with approximate numeric answers. These
-#     are not algebraic full-coverage modes.
-#
-# Many algebra modes work because there are integer-preserving forward
-# maps: factor multiplication, trace/determinant construction,
-# unimodular row operations, and matrix multiplication. COMPLEX usually
-# lifts these to Gaussian integers, but it does not automatically imply
-# identical coverage.
-#
-# Calculus is different. Constructive generation is still the right
-# default -- e.g. choose F and differentiate to make an integral problem.
-# But expression growth, simplification, and "niceness" dominate. Randomly
-# sampling an integrand and hoping for an elementary antiderivative is the
-# same bad sparse-hit pattern as naive eigenvalue rejection.
+# Small rejection filters stay useful after construction — trim coefficient
+# bounds, exclude degeneracies — but hit rate must be high, retries use fresh
+# structure, and failure never falls back to a canned problem. Rejection is
+# cleanup, not generation.
 
 def _rng(low: int, high: int, imag: bool = True) -> complex:
   real = random.randint(low, high)
   if not imag or not COMPLEX: return complex(real, 0)
-  imag_part = random.randint(low, high)
-  if real == 0 and imag_part == 0: imag_part = 1
-  return complex(real, imag_part)
+  return complex(real, random.randint(low, high))
 
 def _rng_float(low: float, high: float, imag: bool = True) -> complex:
   real = round(random.uniform(low, high), 2)
   if not imag or not COMPLEX: return complex(real, 0)
-  imag_part = round(random.uniform(low, high), 2)
-  if abs(real) < 1e-9 and abs(imag_part) < 1e-9: imag_part = 1.0
-  return complex(real, imag_part)
+  return complex(real, round(random.uniform(low, high), 2))
 
 #
 # Parsing and formatting
@@ -161,7 +92,7 @@ def _strip_outer_parens(value: str) -> str:
 def _parse_imag_coeff(value: str) -> float:
   if value in ('', '+'): return 1.0
   if value == '-': return -1.0
-  return float(Fraction(value))
+  return float(value)
 
 def parse_complex_from_user(user_input: str) -> complex:
   cleaned = user_input.strip().replace(' ', '').lower()
@@ -169,8 +100,6 @@ def parse_complex_from_user(user_input: str) -> complex:
   if cleaned in ('i', '+i', 'j', '+j'): return 1j
   if cleaned in ('-i', '-j'): return -1j
   cleaned = cleaned.replace('i', 'j')
-  if cleaned in ('j', '+j'): return 1j
-  if cleaned == '-j': return -1j
   try:
     return complex(cleaned)
   except ValueError:
@@ -180,11 +109,11 @@ def parse_complex_from_user(user_input: str) -> complex:
       for i in range(1, len(body)):
         if body[i] in '+-': sep = i
       if sep != -1:
-        real = float(Fraction(body[:sep]))
+        real = float(body[:sep])
         imag = _parse_imag_coeff(body[sep:])
         return complex(real, imag)
       return complex(0, _parse_imag_coeff(body))
-    return complex(float(Fraction(cleaned)), 0)
+    return complex(float(cleaned), 0)
 
 def _answer_tokens(user_input: str) -> list[str]:
   tokens: list[str] = []
@@ -263,11 +192,14 @@ def format_complex_result(value: complex) -> str:
     return str(int(real)) if real == int(real) else f'{real:.2f}'
   if abs(value.real) < 1e-9:
     imag = value.imag
+    if imag == 1: return 'I'
+    if imag == -1: return '-I'
     return f'{int(imag)}I' if imag == int(imag) else f'{imag:.2f}I'
   sign = '+' if value.imag >= 0 else '-'
   real = value.real
   real_str = str(int(real)) if real == int(real) else f'{real:.2f}'
   imag = abs(value.imag)
+  if imag == 1: return f'{real_str} {sign} I'
   imag_str = str(int(imag)) if imag == int(imag) else f'{imag:.2f}'
   return f'{real_str} {sign} {imag_str}I'
 
@@ -277,14 +209,7 @@ def _fmt(z: complex) -> str:
 def _fres(z: complex) -> str:
   return format_complex_result(z)
 
-def _fentry(value: complex) -> str:
-  if abs(value.imag) < 1e-9:
-    real = value.real
-    return str(int(real)) if real == int(real) else f'{real:.2f}'
-  return format_complex_result(value)
-
 def format_matrix(rows: list[list]) -> str:
-  # {x0 y0 | x1 y1}
   return '{' + ' | '.join(' '.join(_fmt(v) for v in row) for row in rows) + '}'
 
 #
@@ -292,34 +217,34 @@ def format_matrix(rows: list[list]) -> str:
 #
 
 def Plus() -> tuple[str, complex]:
-  z1 = _rng(2, 200)
-  z2 = _rng(2, 200)
+  z1 = _rng(-200, 200)
+  z2 = _rng(-200, 200)
   return f'{_fmt(z1)} + {_fmt(z2)}', z1 + z2
 
 def Minus() -> tuple[str, complex]:
-  z1 = _rng(2, 200)
-  z2 = _rng(2, 200)
+  z1 = _rng(-200, 200)
+  z2 = _rng(-200, 200)
   return f'{_fmt(z1)} - {_fmt(z2)}', z1 - z2
 
 def Times() -> tuple[str, complex]:
-  z1 = _rng(2, 100)
-  z2 = _rng(2, 20)
+  z1 = _rng(-100, 100)
+  z2 = _rng(-20, 20)
   return f'{_fmt(z1)} * {_fmt(z2)}', z1 * z2
 
 def Divide() -> tuple[str, complex]:
-  z1 = _rng(2, 100)
-  z2 = _rng(2, 100)
+  z1 = _rng(-100, 100)
+  z2 = 0
+  while z2 == 0: z2 = _rng(-100, 100)
   return f'{_fmt(z1)} / {_fmt(z2)}', z1 / z2
 
 def Power() -> tuple[str, complex]:
-  z = _rng(2, 10)
+  z = _rng(-10, 10)
   x = random.randint(2, 8)
   return f'{_fmt(z)}^{x}', z ** x
 
-def Log():
+def Log() -> tuple[str, complex]:
+  """Exact discrete exponent drill. Exclude 0 and units so the exponent is not ambiguous."""
   n = random.randint(2, 6)
-  # Exclude 0 (ambiguous: 0^n = 0 for all n) and Gaussian units
-  # (i^1 = i^5 = i, making Log ambiguous with multiple integer answers).
   if COMPLEX:
     pool = [complex(r, i) for r in range(-8, 9) for i in range(-8, 9)
             if complex(r, i) != 0 and abs(complex(r, i)) != 1]
@@ -332,15 +257,12 @@ def Log():
 ## NT
 
 class _UnitTolerantComplex:
-  """Stores the canonical form of a Gaussian integer answer.
-  The grading loop normalizes the user's answer before comparison,
-  so any associate (+-1, +-i multiples) is accepted."""
+  """Stores the canonical Gaussian gcd. Grading accepts all unit associates."""
   def __init__(self, canonical: complex):
     self.canonical = canonical
 
 class _CongruenceCheck:
-  """Stores (a, m) so the grading loop can verify m | (a - answer)
-  rather than comparing against a specific remainder."""
+  """Stores a congruence class. Grading checks m | (a - answer)."""
   def __init__(self, a: complex, m: complex, remainder: complex):
     self.a = a
     self.m = m
@@ -360,29 +282,14 @@ def _is_gaussian_unit(z: complex) -> bool:
   return abs(abs(z) - 1) < 1e-9
 
 def _gaussian_exact_div(a: complex, b: complex) -> complex:
-  """Exact division of Gaussian integers (a/b). Raises if not exact."""
   z = a / b
   q = complex(round(z.real), round(z.imag))
   if abs(a - q * b) > 1e-9:
     raise ArithmeticError(f'non-exact Gaussian division: {a} / {b}')
   return q
 
-def _extended_gcd(a: int, b: int) -> tuple[int, int, int]:
-  """Returns (g, x, y) such that a*x + b*y = g = gcd(a,b) >= 0."""
-  old_r, r = abs(a), abs(b)
-  old_s, s = 1, 0
-  old_t, t = 0, 1
-  while r != 0:
-    q = old_r // r
-    old_r, r = r, old_r - q * r
-    old_s, s = s, old_s - q * s
-    old_t, t = t, old_t - q * t
-  if a < 0: old_s = -old_s
-  if b < 0: old_t = -old_t
-  return (old_r, old_s, old_t)
-
 def _gaussian_extended_gcd(a: complex, b: complex) -> tuple[complex, complex, complex]:
-  """Returns (g, x, y) such that a*x + b*y = g = gaussian_gcd(a,b)."""
+  """Returns (g, x, y) with a*x + b*y = g = gcd(a,b) in Z[i]."""
   old_r, r = a, b
   old_s, s = complex(1, 0), complex(0, 0)
   old_t, t = complex(0, 0), complex(1, 0)
@@ -394,9 +301,6 @@ def _gaussian_extended_gcd(a: complex, b: complex) -> tuple[complex, complex, co
   return (old_r, old_s, old_t)
 
 def _canonical_gaussian(z: complex) -> complex:
-  # gcd in Z[i] is only defined up to units (+-1, +-i).
-  # Normalizing to the first quadrant (re > 0, im >= 0)
-  # picks a unique representative for grading.
   if z == 0: return z
   for u in [1, -1, 1j, -1j]:
     w = z * u
@@ -408,25 +312,26 @@ def _canonical_gaussian(z: complex) -> complex:
   return complex(z.real, abs(z.imag))
 
 def GCD() -> tuple[str, object]:
+  """Choose gcd first, then coprime cofactors. Complex answers are up to units."""
   if not COMPLEX:
     g = random.randint(2, 20)
-    u = random.randint(1, 15)
-    vs = [v for v in range(1, 16) if math.gcd(u, v) == 1 and v != u]
-    v = random.choice(vs)
-    x = g * u
-    y = g * v
+    u = random.choice([n for n in range(-15, 16) if n])
+    v = random.choice([n for n in range(-15, 16) if n and n != u])
+    h = math.gcd(abs(u), abs(v))
+    x = g * (u // h)
+    y = g * (v // h)
     return f'GCD[{x}, {y}]', complex(g, 0)
 
-  # COMPLEX: choose gcd g, then construct coprime cofactors by
-  # dividing random cofactor-candidates by their Gaussian gcd.
   g_pool = [complex(r, i) for r in range(-5, 6) for i in range(-5, 6)
             if complex(r, i) != 0 and abs(complex(r, i)) > 1]
-  g_raw = random.choice(g_pool)
-  g = _canonical_gaussian(g_raw)
+  g = _canonical_gaussian(random.choice(g_pool))
 
-  raw_pool = [complex(r, i) for r in range(1, 7) for i in range(-3, 4)]
-  pairs = [(a, b) for a in raw_pool for b in raw_pool if a != b]
-  a_raw, b_raw = random.choice(pairs)
+  raw_pool = [complex(r, i) for r in range(-6, 7) for i in range(-6, 7)
+              if r != 0 or i != 0]
+  a_raw = random.choice(raw_pool)
+  b_raw = random.choice(raw_pool)
+  while b_raw == a_raw:
+    b_raw = random.choice(raw_pool)
 
   h = _gaussian_gcd(a_raw, b_raw)
   a = _gaussian_exact_div(a_raw, h)
@@ -436,17 +341,18 @@ def GCD() -> tuple[str, object]:
   return f'GCD[{_fmt(x)}, {_fmt(y)}]', _UnitTolerantComplex(g)
 
 def Mod() -> tuple[str, object]:
+  """Choose modulus, remainder, and quotient before forming the dividend."""
   if not COMPLEX:
     m = random.randint(5, 30)
     r = random.randint(0, m - 1)
     q = random.choice([q for q in range(-30, 31) if q != 0])
     a = q * m + r
-    return f'{a} % {m}', complex(r, 0)
-    #return f'Mod[{a}, {m}]', complex(r, 0)
+    return f'Mod[{a}, {m}]', complex(r, 0)
 
-  m = complex(random.randint(2, 5), random.randint(0, 3))
+  m_pool = [complex(r, i) for r in range(-5, 6) for i in range(-5, 6)
+            if abs(complex(r, i)) > 1]
+  m = random.choice(m_pool)
   r_raw = complex(random.randint(-4, 4), random.randint(-4, 4))
-  if r_raw == 0: r_raw = 1
   _, r = _gaussian_divmod(r_raw, m)
   q_pool = [complex(r, i) for r in range(-5, 6) for i in range(-3, 4)
             if r != 0 or i != 0]
@@ -475,6 +381,12 @@ def _multiply_polynomials(p: list[int], q: list[int]) -> list[int]:
       result[i + j] += pi * qj
   return result
 
+def _primitive_coeffs(coeffs: list[int]) -> list[int]:
+  g = 0
+  for c in coeffs: g = math.gcd(g, c)
+  if g > 1: return [c // g for c in coeffs]
+  return coeffs
+
 def _format_polynomial(coeffs: list[int]) -> str:
   terms = []
   for i in range(len(coeffs) - 1, -1, -1):
@@ -489,28 +401,13 @@ def _format_polynomial(coeffs: list[int]) -> str:
   return ' '.join(terms).strip()
 
 def _roots_integer(degree: int) -> tuple[list[int], list[complex]]:
-  roots_int = [random.randint(-10, 10) for _ in range(degree)]
-  coeffs = [1]
-  for r in roots_int: coeffs = _multiply_polynomials(coeffs, [-r, 1])
-  return coeffs, [complex(r, 0) for r in roots_int]
-
-def _roots_rational(degree: int) -> tuple[list[int], list[complex]]:
-  roots_frac = [Fraction(random.randint(-6, 6), random.randint(2, 4)) for _ in range(degree)]
-  coeffs = [1]
-  for r in roots_frac: coeffs = _multiply_polynomials(coeffs, [-r.numerator, r.denominator])
-  g = coeffs[0]
-  for c in coeffs[1:]: g = math.gcd(g, c)
-  if g > 1: coeffs = [c // g for c in coeffs]
-  return coeffs, [complex(float(r), 0) for r in roots_frac]
-
-def _roots_gaussian(degree: int) -> tuple[list[int], list[complex]]:
   roots: list[complex] = []
   coeffs = [1]
   rem = degree
   while rem > 0:
-    if COMPLEX and rem >= 2 and random.choice([True, False]):
+    if COMPLEX and rem >= 2:
       a = random.randint(-10, 10)
-      b = random.randint(1, 10)
+      b = random.randint(-10, 10)
       roots.extend([complex(a, b), complex(a, -b)])
       coeffs = _multiply_polynomials(coeffs, [a * a + b * b, -2 * a, 1])
       rem -= 2
@@ -521,102 +418,82 @@ def _roots_gaussian(degree: int) -> tuple[list[int], list[complex]]:
       rem -= 1
   return coeffs, roots
 
+def _roots_rational(degree: int) -> tuple[list[int], list[complex]]:
+  roots: list[complex] = []
+  coeffs = [1]
+  rem = degree
+  while rem > 0:
+    if COMPLEX and rem >= 2:
+      a = Fraction(random.randint(-4, 4), random.randint(2, 4))
+      b = Fraction(random.randint(-4, 4), random.randint(2, 4))
+      c0 = a * a + b * b
+      c1 = -2 * a
+      l = math.lcm(c0.denominator, c1.denominator)
+      factor = _primitive_coeffs([int(c0 * l), int(c1 * l), l])
+      roots.extend([complex(float(a), float(b)), complex(float(a), -float(b))])
+      coeffs = _multiply_polynomials(coeffs, factor)
+      rem -= 2
+    else:
+      r = Fraction(random.randint(-6, 6), random.randint(2, 4))
+      roots.append(complex(float(r), 0))
+      coeffs = _multiply_polynomials(coeffs, _primitive_coeffs([-r.numerator, r.denominator]))
+      rem -= 1
+  return _primitive_coeffs(coeffs), roots
+
 SQUAREFREE = [2, 3, 5, 6, 7, 10, 11, 13, 14, 15, 17, 19, 21, 22, 23]
 
-def _roots_surd_real(degree: int) -> tuple[list[int], list[complex]]:
+def _roots_surd(degree: int) -> tuple[list[int], list[complex]]:
   max_coeff = 300 if degree <= 3 else 500
-  # Empirics (20k trials): coeff bound always satisfied within 5 tries; 0 failures.
   for _ in range(5):
     roots: list[complex] = []
     coeffs = [1]
     rem = degree
     while rem > 0:
-      if rem >= 2 and random.choice([True, rem >= 4]):
+      if rem >= 2:
         p = random.randint(-4, 4)
         q = 1
         r = random.randint(1, 3)
         d = random.choice(SQUAREFREE[:8] if degree >= 3 else SQUAREFREE)
-        # Roots (p +- q*sqrt(d))/r:
-        # factor = r^2 x^2 - 2pr x + (p^2 - q^2 d)
-        factor = [p * p - q * q * d, -2 * p * r, r * r]
-        coeffs = _multiply_polynomials(coeffs, factor)
         sqrt_d = math.sqrt(d)
-        roots.append(complex((p + q * sqrt_d) / r, 0))
-        roots.append(complex((p - q * sqrt_d) / r, 0))
+        if COMPLEX:
+          factor = [p * p + q * q * d, -2 * p * r, r * r]
+          roots.append(complex(p / r, q * sqrt_d / r))
+          roots.append(complex(p / r, -q * sqrt_d / r))
+        else:
+          factor = [p * p - q * q * d, -2 * p * r, r * r]
+          roots.append(complex((p + q * sqrt_d) / r, 0))
+          roots.append(complex((p - q * sqrt_d) / r, 0))
+        coeffs = _multiply_polynomials(coeffs, _primitive_coeffs(factor))
         rem -= 2
       else:
         n = random.randint(-10, 10)
         roots.append(complex(n, 0))
         coeffs = _multiply_polynomials(coeffs, [-n, 1])
         rem -= 1
-    if max(abs(c) for c in coeffs) <= max_coeff: return coeffs, roots
-  return coeffs, roots
-
-def _roots_surd_complex(degree: int) -> tuple[list[int], list[complex]]:
-  max_coeff = 300 if degree <= 3 else 500
-  # Empirics (20k trials): coeff bound always satisfied within 5 tries; 0 failures.
-  for _ in range(5):
-    roots: list[complex] = []
-    coeffs = [1]
-    rem = degree
-    while rem > 0:
-      if rem >= 2 and random.choice([True, rem >= 4]):
-        p = random.randint(-4, 4)
-        q = 1
-        r = random.randint(1, 3)
-        d = random.choice(SQUAREFREE[:8] if degree >= 3 else SQUAREFREE)
-        # Roots (p +- qi*sqrt(d))/r:
-        # factor = r^2 x^2 - 2pr x + (p^2 + q^2 d)
-        factor = [p * p + q * q * d, -2 * p * r, r * r]
-        coeffs = _multiply_polynomials(coeffs, factor)
-        sqrt_d = math.sqrt(d)
-        roots.append(complex(p / r, q * sqrt_d / r))
-        roots.append(complex(p / r, -q * sqrt_d / r))
-        rem -= 2
-      else:
-        n = random.randint(-10, 10)
-        roots.append(complex(n, 0))
-        coeffs = _multiply_polynomials(coeffs, [-n, 1])
-        rem -= 1
-    if max(abs(c) for c in coeffs) <= max_coeff: return coeffs, roots
-  return coeffs, roots
-
-def _roots_mixed(degree: int) -> tuple[list[int], list[complex]]:
-  """Interleave integer, rational, and surd factors in one polynomial."""
-  max_coeff = 500
-  for _ in range(5):
-    roots: list[complex] = []
-    coeffs = [1]
-    rem = degree
-    while rem > 0:
-      kind = random.choice(['int', 'rat', 'surd'])
-      if kind == 'int' or rem == 1:
-        r = random.randint(-10, 10)
-        roots.append(complex(r, 0))
-        coeffs = _multiply_polynomials(coeffs, [-r, 1])
-        rem -= 1
-      elif kind == 'rat':
-        r = Fraction(random.randint(-6, 6), random.randint(2, 4))
-        roots.append(complex(float(r), 0))
-        coeffs = _multiply_polynomials(coeffs, [-r.numerator, r.denominator])
-        rem -= 1
-      elif kind == 'surd' and rem >= 2:
-        p = random.randint(-4, 4)
-        q = 1
-        rd = random.randint(1, 3)
-        d = random.choice(SQUAREFREE[:8] if degree >= 3 else SQUAREFREE)
-        factor = [p * p - q * q * d, -2 * p * rd, rd * rd]
-        coeffs = _multiply_polynomials(coeffs, factor)
-        sqrt_d = math.sqrt(d)
-        roots.append(complex((p + q * sqrt_d) / rd, 0))
-        roots.append(complex((p - q * sqrt_d) / rd, 0))
-        rem -= 2
+    coeffs = _primitive_coeffs(coeffs)
     if max(abs(c) for c in coeffs) <= max_coeff: return coeffs, roots
   return coeffs, roots
 
 def _roots_repeated(degree: int) -> tuple[list[int], list[complex]]:
+  if COMPLEX and degree >= 4:
+    roots: list[complex] = []
+    coeffs = [1]
+    a = random.randint(-3, 3)
+    b = random.randint(-3, 3)
+    factor = [a * a + b * b, -2 * a, 1]
+    for _ in range(2):
+      roots.extend([complex(a, b), complex(a, -b)])
+      coeffs = _multiply_polynomials(coeffs, factor)
+    rem = degree - 4
+    while rem > 0:
+      r = random.randint(-10, 10)
+      roots.append(complex(r, 0))
+      coeffs = _multiply_polynomials(coeffs, [-r, 1])
+      rem -= 1
+    return coeffs, roots
+
   unique_n = random.randint(1, max(1, degree - 1))
-  unique = [random.randint(-10, 10) for _ in range(unique_n)]
+  unique = random.sample(range(-10, 11), unique_n)
   roots_int = unique[:]
   while len(roots_int) < degree: roots_int.append(random.choice(unique))
   random.shuffle(roots_int)
@@ -624,59 +501,109 @@ def _roots_repeated(degree: int) -> tuple[list[int], list[complex]]:
   for r in roots_int: coeffs = _multiply_polynomials(coeffs, [-r, 1])
   return coeffs, [complex(r, 0) for r in roots_int]
 
+def _roots_mixed(degree: int) -> tuple[list[int], list[complex]]:
+  max_coeff = 500
+  for _ in range(5):
+    roots: list[complex] = []
+    coeffs = [1]
+    rem = degree
+    while rem > 0:
+      if rem == 1:
+        kind = random.choice(['int', 'rat'])
+      elif COMPLEX:
+        kind = random.choice(['gaussian', 'gaussian_rational', 'surd_complex'])
+      else:
+        kind = random.choice(['int', 'rat', 'surd'])
+
+      if kind == 'int':
+        r = random.randint(-10, 10)
+        roots.append(complex(r, 0))
+        coeffs = _multiply_polynomials(coeffs, [-r, 1])
+        rem -= 1
+      elif kind == 'rat':
+        r = Fraction(random.randint(-6, 6), random.randint(2, 4))
+        roots.append(complex(float(r), 0))
+        coeffs = _multiply_polynomials(coeffs, _primitive_coeffs([-r.numerator, r.denominator]))
+        rem -= 1
+      elif kind == 'surd':
+        p = random.randint(-4, 4)
+        q = 1
+        rd = random.randint(1, 3)
+        d = random.choice(SQUAREFREE[:8] if degree >= 3 else SQUAREFREE)
+        factor = [p * p - q * q * d, -2 * p * rd, rd * rd]
+        coeffs = _multiply_polynomials(coeffs, _primitive_coeffs(factor))
+        sqrt_d = math.sqrt(d)
+        roots.append(complex((p + q * sqrt_d) / rd, 0))
+        roots.append(complex((p - q * sqrt_d) / rd, 0))
+        rem -= 2
+      elif kind == 'gaussian':
+        a = random.randint(-10, 10)
+        b = random.randint(-10, 10)
+        roots.extend([complex(a, b), complex(a, -b)])
+        coeffs = _multiply_polynomials(coeffs, [a * a + b * b, -2 * a, 1])
+        rem -= 2
+      elif kind == 'gaussian_rational':
+        a = Fraction(random.randint(-4, 4), random.randint(2, 4))
+        b = Fraction(random.randint(-4, 4), random.randint(2, 4))
+        c0 = a * a + b * b
+        c1 = -2 * a
+        l = math.lcm(c0.denominator, c1.denominator)
+        factor = _primitive_coeffs([int(c0 * l), int(c1 * l), l])
+        coeffs = _multiply_polynomials(coeffs, factor)
+        roots.extend([complex(float(a), float(b)), complex(float(a), -float(b))])
+        rem -= 2
+      elif kind == 'surd_complex':
+        p = random.randint(-4, 4)
+        q = 1
+        rd = random.randint(1, 3)
+        d = random.choice(SQUAREFREE[:8] if degree >= 3 else SQUAREFREE)
+        factor = [p * p + q * q * d, -2 * p * rd, rd * rd]
+        coeffs = _multiply_polynomials(coeffs, _primitive_coeffs(factor))
+        sqrt_d = math.sqrt(d)
+        roots.append(complex(p / rd, q * sqrt_d / rd))
+        roots.append(complex(p / rd, -q * sqrt_d / rd))
+        rem -= 2
+
+    coeffs = _primitive_coeffs(coeffs)
+    if max(abs(c) for c in coeffs) <= max_coeff: return coeffs, roots
+  return coeffs, roots
+
 def Roots() -> tuple[str, list[complex]]:
+  """Choose factors first. Answers are numeric; users enter decimal approximations."""
   degree = random.choices([2, 3, 4], weights=[90, 10, 1], k=1)[0]
-  strategies = ['integer', 'rational', 'surd_real', 'repeated', 'mixed']
-  if COMPLEX: strategies.extend(['gaussian', 'surd_complex'])
-  strategy = random.choice(strategies)
+  strategy = random.choice(['integer', 'rational', 'surd', 'repeated', 'mixed'])
   if strategy == 'integer': coeffs, roots = _roots_integer(degree)
   elif strategy == 'rational': coeffs, roots = _roots_rational(degree)
-  elif strategy == 'gaussian': coeffs, roots = _roots_gaussian(degree)
-  elif strategy == 'surd_real': coeffs, roots = _roots_surd_real(degree)
-  elif strategy == 'surd_complex': coeffs, roots = _roots_surd_complex(degree)
+  elif strategy == 'surd': coeffs, roots = _roots_surd(degree)
   elif strategy == 'repeated': coeffs, roots = _roots_repeated(degree)
   elif strategy == 'mixed': coeffs, roots = _roots_mixed(degree)
   else: coeffs, roots = _roots_integer(degree)
-
-  # Optional scalar leading coefficient (non-monic polynomials).
-  if random.random() < 0.3:
-    s = random.randint(2, 3)
-    scaled = [c * s for c in coeffs]
-    if max(abs(c) for c in scaled) <= 500:
-      coeffs = scaled
-
   return f'Roots[{_format_polynomial(coeffs)} == 0, x]', roots
 
-# Matrix 2D
+# Matrices
 
 def matrix_multiply():
-  a11, a12 = _rng(-4, 4), _rng(-4, 4)
-  a21, a22 = _rng(-4, 4), _rng(-4, 4)
-  b11, b12 = _rng(-4, 4), _rng(-4, 4)
-  b21, b22 = _rng(-4, 4), _rng(-4, 4)
-  r11 = a11 * b11 + a12 * b21
-  r12 = a11 * b12 + a12 * b22
-  r21 = a21 * b11 + a22 * b21
-  r22 = a21 * b12 + a22 * b22
-  A = format_matrix([[a11, a12], [a21, a22]])
-  B = format_matrix([[b11, b12], [b21, b22]])
-  return f'{A} * {B}', (r11, r12, r21, r22)
+  n = 2
+  A = [[_rng(-4, 4) for _ in range(n)] for _ in range(n)]
+  B = [[_rng(-4, 4) for _ in range(n)] for _ in range(n)]
+  C = tuple(sum(A[i][k] * B[k][j] for k in range(n))
+            for i in range(n) for j in range(n))
+  return f'{format_matrix(A)} * {format_matrix(B)}', C
 
 _gaussian_inv_cache: dict = {}
 
 def _gaussian_inverse_candidates(det: complex, bound: int) -> list:
-  """Enumerate bounded Gaussian unimodular matrices by completing primitive top rows."""
-  key = (round(det.real), round(det.imag), bound)
+  """Enumerate bounded unimodular matrices by completing primitive top rows."""
+  key = (round(det.real), round(det.imag), bound, COMPLEX)
   if key in _gaussian_inv_cache:
     return _gaussian_inv_cache[key]
 
-  pool = [complex(r, i) for r in range(-bound, bound + 1)
-          for i in range(-bound, bound + 1)
-          if r != 0 or i != 0]
+  imag_values = range(-bound, bound + 1) if COMPLEX else range(1)
+  pool = [complex(r, i) for r in range(-bound, bound + 1) for i in imag_values]
   candidates = []
   for a in pool:
     for b in pool:
-      if a == b: continue
+      if a == 0 and b == 0: continue
       g, x, y = _gaussian_extended_gcd(a, b)
       if not _is_gaussian_unit(g): continue
       c = _gaussian_exact_div(-det * y, g)
@@ -689,37 +616,12 @@ def _gaussian_inverse_candidates(det: complex, bound: int) -> list:
   return candidates
 
 def Inverse():
-  # Restrict |det| = 1 so A^-1 = adj(A)/det has integer entries.
+  """Integer inverse iff determinant is a unit. Complete a primitive row by Bezout."""
   bound = 8
-
-  if not COMPLEX:
-    det = random.choice([-1, 1])
-    candidates = []
-    for a_val in range(1, bound + 1):
-      for b_val in range(-bound, bound + 1):
-        if b_val == 0: continue
-        if math.gcd(abs(a_val), abs(b_val)) != 1: continue
-        g, x, y = _extended_gcd(a_val, b_val)
-        if g != 1: continue
-        c_val = -det * y
-        d_val = det * x
-        if abs(c_val) <= bound and abs(d_val) <= bound:
-          candidates.append((a_val, b_val, c_val, d_val))
-
-    if not candidates:
-      raise RuntimeError('no real unimodular inverse candidates within bounds')
-
-    a_val, b_val, c_val, d_val = random.choice(candidates)
-    a = complex(a_val, 0); b = complex(b_val, 0)
-    c = complex(c_val, 0); d = complex(d_val, 0)
-    scale = 1 / det
-    inv = (scale * d, -scale * b, -scale * c, scale * a)
-    return f'Inverse{format_matrix([[a, b], [c, d]])}', inv
-
-  det = random.choice([-1, 1, 1j, -1j])
+  det = random.choice([-1, 1, 1j, -1j] if COMPLEX else [-1, 1])
   candidates = _gaussian_inverse_candidates(det, bound)
   if not candidates:
-    raise RuntimeError('no Gaussian unimodular inverse candidates within bounds')
+    raise RuntimeError('no unimodular inverse candidates within bounds')
 
   a, b, c, d = random.choice(candidates)
   scale = 1 / det
@@ -732,53 +634,41 @@ def Det():
   return f'Det{format_matrix([[a, b], [c, d]])}', a * d - b * c
 
 def Eigenvalues():
-  strategy = random.choice(['real_diagonalizable', 'complex_conjugate_pair'])
-
-  if strategy == 'real_diagonalizable':
-    l1 = random.randint(-8, 8)
-    l2 = random.choice([x for x in range(-8, 9) if x != l1])
-
-    # Triangular construction: eigenvalues are on the diagonal.
-    # Small off-diagonal entry for variety; covers diagonal case (k=0).
-    k = random.randint(-3, 3)
-    if random.choice([True, False]):
-      a, b, c, d = l1, k, 0, l2
-    else:
-      a, b, c, d = l1, 0, k, l2
-
-    return f'Eigenvalues{format_matrix([[a, b], [c, d]])}', (complex(l1, 0), complex(l2, 0))
-
-  # Real block form [[re, -im], [im, re]] has eigenvalues re +- i*im.
-  re = random.randint(-3, 3)
-  im = random.randint(1, 3)
-  a, b, c, d = re, -im, im, re
-  return f'Eigenvalues{format_matrix([[a, b], [c, d]])}', (complex(re, im), complex(re, -im))
+  """Choose eigenvalues first, then build a triangular matrix."""
+  l1 = _rng(-8, 8)
+  l2 = _rng(-8, 8)
+  while abs(l2 - l1) < 1e-9:
+    l2 = _rng(-8, 8)
+  k = _rng(-3, 3)
+  return f'Eigenvalues{format_matrix([[l1, k], [0, l2]])}', (l1, l2)
 
 # Transcendentals
 
 def Sin():
-  z = _rng_float(0, math.pi / 2)
+  z = _rng_float(-math.pi, math.pi)
   return f'Sin[{_fmt(z)}]', cmath.sin(z)
 
 def Cos():
-  z = _rng_float(0, math.pi / 2)
+  z = _rng_float(-math.pi, math.pi)
   return f'Cos[{_fmt(z)}]', cmath.cos(z)
 
 def Tan():
-  z = _rng_float(0, math.pi / 3)
+  z = _rng_float(-math.pi / 3, math.pi / 3)
   return f'Tan[{_fmt(z)}]', cmath.tan(z)
 
 def ArcSin():
-  x = _rng_float(0, 1, imag=False)
-  return f'ArcSin[{x.real}]', complex(math.asin(x.real), 0)
+  z = _rng_float(-1, 1)
+  return f'ArcSin[{_fmt(z)}]', cmath.asin(z)
 
 def ArcCos():
-  x = _rng_float(0, 1, imag=False)
-  return f'ArcCos[{x.real}]', complex(math.acos(x.real), 0)
+  z = _rng_float(-1, 1)
+  return f'ArcCos[{_fmt(z)}]', cmath.acos(z)
 
 def ArcTan():
-  x = _rng_float(0, 1, imag=False)
-  return f'ArcTan[{x.real}]', complex(math.atan(x.real), 0)
+  z = _rng_float(-1, 1)
+  while COMPLEX and abs(z.real) < 1e-12 and abs(abs(z.imag) - 1) < 1e-12:
+    z = _rng_float(-1, 1)
+  return f'ArcTan[{_fmt(z)}]', cmath.atan(z)
 
 def complex_rotation():
   z = _rng_float(-5, 5)
